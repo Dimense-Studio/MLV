@@ -142,23 +142,6 @@ VM Engine   Network      Storage
 
 ---
 
-## 📦 Installation (Planned)
-
-```bash
-# Coming soon
-brew install mlv
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/your-org/mlv.git
-cd mlv
-make build
-```
-
----
-
 ## 🚀 Quick Start
 
 ### 1. Launch MLV (macOS Native App)
