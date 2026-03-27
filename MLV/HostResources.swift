@@ -48,31 +48,44 @@ struct HostResources {
     static func getNetworkInterfaces() -> [NetworkInterface] {
         var interfaces: [NetworkInterface] = []
         
-        // Use SCNetworkInterface to get real system interfaces if available
-        // Fallback to common Mac mini M4 defaults
-        let defaultInterfaces = [
-            ("10Gb Ethernet", HostResources.NetworkInterface.InterfaceType.ethernet, "10 Gbps", "en1"),
-            ("Wi-Fi 6E", HostResources.NetworkInterface.InterfaceType.wifi, "2.4 Gbps", "en0"),
-            ("Thunderbolt Bridge", HostResources.NetworkInterface.InterfaceType.thunderbolt, "40 Gbps", "bridge0")
-        ]
+        // Strategy: Detect real active interfaces first
+        let bsdNames = ["en0", "en1", "en2", "en3", "en4", "bridge0"]
         
-        for (name, type, speed, bsd) in defaultInterfaces {
-            var interface = NetworkInterface(name: name, type: type, speed: speed, bsdName: bsd)
+        for bsd in bsdNames {
             if let ip = getIPAddress(for: bsd), !ip.isEmpty {
-                interface.isActive = true
+                // Determine type based on common macOS naming conventions
+                var type: NetworkInterface.InterfaceType = .unknown
+                var name = "Interface \(bsd)"
+                var speed = "Unknown"
+                
+                if bsd == "en0" {
+                    type = .wifi
+                    name = "Wi-Fi"
+                    speed = "2.4 Gbps"
+                } else if bsd.hasPrefix("en") {
+                    type = .ethernet
+                    name = "Ethernet (\(bsd))"
+                    speed = "10 Gbps"
+                } else if bsd.hasPrefix("bridge") {
+                    type = .thunderbolt
+                    name = "Thunderbolt Bridge"
+                    speed = "40 Gbps"
+                }
+                
+                interfaces.append(NetworkInterface(name: name, type: type, speed: speed, bsdName: bsd, isActive: true))
             }
-            interfaces.append(interface)
         }
         
-        // Scan for any other active 'en' interfaces that might be the real WiFi/Ethernet
-        for i in 0...4 {
-            let bsd = "en\(i)"
-            if !interfaces.contains(where: { $0.bsdName == bsd }), let ip = getIPAddress(for: bsd), !ip.isEmpty {
-                interfaces.append(NetworkInterface(name: "Other Interface (\(bsd))", type: .unknown, speed: "Unknown", bsdName: bsd, isActive: true))
-            }
+        // Fallback if nothing is active
+        if interfaces.isEmpty {
+            interfaces.append(NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "1 Gbps", bsdName: "nat0", isActive: true))
         }
         
         return interfaces
+    }
+
+    static func ipAddress(for bsdName: String) -> String? {
+        getIPAddress(for: bsdName)
     }
     
     private static func getIPAddress(for interface: String) -> String? {

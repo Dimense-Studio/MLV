@@ -8,8 +8,22 @@
 import SwiftUI
 import SwiftData
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in
+            AppNotifications.shared.requestIfNeeded()
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
+
 @main
 struct MLVApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
@@ -24,10 +38,14 @@ struct MLVApp: App {
     }()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             ContentView()
         }
         .modelContainer(sharedModelContainer)
+
+        MenuBarExtra("MLV", systemImage: "cube.transparent") {
+            MenuBarRootView()
+        }
         
         WindowGroup(id: "console", for: UUID.self) { $vmID in
             if let id = vmID,
@@ -49,5 +67,25 @@ struct MLVApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1024, height: 768)
         .handlesExternalEvents(matching: []) // Prevent automatic window restoration for consoles
+    }
+}
+
+private struct MenuBarRootView: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open MLV") {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        Button("Close All Windows") {
+            for window in NSApp.windows {
+                window.close()
+            }
+        }
+        Divider()
+        Button("Quit") {
+            NSApp.terminate(nil)
+        }
     }
 }

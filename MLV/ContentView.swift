@@ -29,12 +29,14 @@ struct ContentView: View {
         case vms = "Virtual Machines"
         case pods = "Kubernetes Pods"
         case storage = "Distributed Storage"
+        case network = "Network Topology"
         
         var icon: String {
             switch self {
             case .vms: return "macwindow"
             case .pods: return "shippingbox.fill"
             case .storage: return "externaldrive.connected.to.line.below"
+            case .network: return "network"
             }
         }
     }
@@ -103,6 +105,9 @@ struct ContentView: View {
                 case .storage:
                     StorageListView()
                         .navigationTitle("Distributed Storage")
+                case .network:
+                    NetworkListView()
+                        .navigationTitle("Network Topology")
                 }
             }
             .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
@@ -138,55 +143,97 @@ struct ContentView: View {
 struct VMListView: View {
     let onConsole: (VirtualMachine) -> Void
     @State private var showingConfigForm = false
+    @State private var addButtonGlow = false
     
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // Header with Add Button
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Active Nodes")
-                            .font(.title2.bold())
-                        Text("\(VMManager.shared.virtualMachines.count) Nodes Provisioned")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    
-                    Button {
-                        showingConfigForm = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                            Text("Add Node")
+        ZStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Header with Add Button
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Active Nodes")
+                                .font(.title2.bold())
+                            Text("\(VMManager.shared.virtualMachines.count) Nodes Provisioned")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.accentColor)
-                        .cornerRadius(20)
+                        Spacer()
+                        
+                        Button {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                showingConfigForm = true
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 12, weight: .black))
+                                    .symbolEffect(.pulse.byLayer, options: .repeating, value: addButtonGlow)
+                                Text("Add Node")
+                                    .font(.system(size: 12, weight: .black, design: .rounded))
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.accentColor.opacity(addButtonGlow ? 0.35 : 0.18),
+                                                Color.purple.opacity(addButtonGlow ? 0.22 : 0.10),
+                                                Color.white.opacity(0.06)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .blur(radius: addButtonGlow ? 0 : 0)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            )
+                            .shadow(color: Color.accentColor.opacity(addButtonGlow ? 0.35 : 0.12), radius: addButtonGlow ? 18 : 10, x: 0, y: 10)
+                            .cornerRadius(18)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal)
+                    .padding(.horizontal)
 
-                LazyVStack(spacing: 16) {
-                    if VMManager.shared.virtualMachines.isEmpty {
-                        ContentUnavailableView("No Nodes Active", systemImage: "server.rack", description: Text("Click 'Add Node' to deploy a new Debian 13 server"))
-                            .padding(.top, 100)
-                    } else {
-                        ForEach(VMManager.shared.virtualMachines) { vm in
-                            VMCard(vm: vm, onConsole: {
-                                onConsole(vm)
-                            })
+                    LazyVStack(spacing: 16) {
+                        if VMManager.shared.virtualMachines.isEmpty {
+                            ContentUnavailableView("No Nodes Active", systemImage: "server.rack", description: Text("Click 'Add Node' to deploy a new server"))
+                                .padding(.top, 100)
+                        } else {
+                            ForEach(VMManager.shared.virtualMachines) { vm in
+                                VMCard(vm: vm, onConsole: {
+                                    onConsole(vm)
+                                })
+                            }
                         }
                     }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
+                .padding(.vertical)
             }
-            .padding(.vertical)
+            
+            // Minimalist Overlay Form
+            if showingConfigForm {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onTapGesture {
+                        withAnimation { showingConfigForm = false }
+                    }
+                
+                VMConfigForm(isPresented: $showingConfigForm)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(1)
+            }
         }
-        .sheet(isPresented: $showingConfigForm) {
-            VMConfigForm()
+        .onAppear {
+            addButtonGlow = true
         }
     }
 }
@@ -215,8 +262,16 @@ struct VMCard: View {
                                 .foregroundStyle(Color.accentColor)
                                 .cornerRadius(4)
                         }
+
+                        Text(vm.selectedDistro.shortLabel.uppercased())
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.white.opacity(0.08))
+                            .foregroundStyle(.secondary)
+                            .cornerRadius(4)
                     }
-                    Text(vm.isInstalled ? "Debian 13 Trixie Server" : "Provisioning System...")
+                    Text(vm.isInstalled ? vm.selectedDistro.rawValue : "Provisioning System...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -278,10 +333,43 @@ struct VMCard: View {
                     
                     Spacer()
                     
+                    if vm.downloadTask != nil {
+                        Button {
+                            Task { try? await VMManager.shared.stopVM(vm) }
+                        } label: {
+                            Label("Cancel Download", systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    
                     Button {
                         Task { try? await VMManager.shared.startVM(vm) }
                     } label: {
                         Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else if vm.downloadTask != nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Downloading ISO...")
+                            .font(.caption.bold())
+                            .foregroundStyle(.blue)
+                        ProgressView(value: Double(vm.downloadPercent), total: 100.0)
+                            .progressViewStyle(.linear)
+                            .tint(.blue)
+                        Text("\(vm.downloadPercent)% • \(vm.downloadSpeedMBps, specifier: "%.1f") MB/s • ETA \(vm.downloadETASeconds / 60)m \(vm.downloadETASeconds % 60)s")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    Button {
+                        Task { try? await VMManager.shared.stopVM(vm) }
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -372,10 +460,20 @@ struct PodsListView: View {
                                 StatusBadge(state: vm.state)
                             }
                             
-                            VStack(spacing: 10) {
-                                PodRow(name: "coredns-78fcdf6894", status: "Running", cpu: "12m", ram: "18Mi")
-                                PodRow(name: "longhorn-manager-v2", status: "Running", cpu: "45m", ram: "124Mi")
-                                PodRow(name: "k3s-agent-init", status: "Running", cpu: "10m", ram: "64Mi")
+                            if vm.pods.isEmpty {
+                                HStack {
+                                    ProgressView().scaleEffect(0.5)
+                                    Text("Detecting pods...")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 10)
+                            } else {
+                                VStack(spacing: 10) {
+                                    ForEach(vm.pods) { pod in
+                                        PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
+                                    }
+                                }
                             }
                         }
                         .padding()
@@ -393,6 +491,7 @@ struct PodRow: View {
     let status: String
     let cpu: String
     let ram: String
+    let namespace: String
     @State private var isHovered = false
     
     var body: some View {
@@ -405,6 +504,13 @@ struct PodRow: View {
                     Text(name)
                         .font(.system(.subheadline, design: .monospaced))
                         .fontWeight(.medium)
+                    
+                    Text(namespace)
+                        .font(.system(size: 8))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(3)
                 }
                 Text(status)
                     .font(.system(size: 10, weight: .bold))
@@ -512,23 +618,239 @@ struct StorageFileRow: View {
     
     var body: some View {
         HStack {
-            Image(systemName: "doc.plaintext.fill")
+            Image(systemName: "doc.fill")
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(name)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .font(.system(.caption, design: .monospaced))
+                    .fontWeight(.bold)
                 Text(type)
-                    .font(.caption2)
+                    .font(.system(size: 8))
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Text(size)
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(Color.accentColor)
         }
-        .padding(8)
+        .padding(10)
         .background(Color.white.opacity(0.05))
-        .cornerRadius(6)
+        .cornerRadius(8)
+    }
+}
+
+struct NetworkListView: View {
+    @State private var showConfig = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Cluster Networking")
+                            .font(.title2.bold())
+                        Text("Real-time topology and link speeds")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "network")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("WireGuard Mesh")
+                                .font(.headline)
+                            Text("Autodiscovery + secure multi-host cluster overlay")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation { showConfig.toggle() }
+                        } label: {
+                            Text(showConfig ? "Hide Config" : "Show Config")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.06))
+                                .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("THIS HOST")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                            Text("\(WireGuardManager.shared.hostInfo.name) • \(WireGuardManager.shared.publicKeyShort)…")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        Spacer()
+                        Text("PORT \(WireGuardManager.shared.listenPort)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
+
+                    if !DiscoveryManager.shared.discovered.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("DISCOVERED")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                            ForEach(DiscoveryManager.shared.discovered) { host in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(host.name)
+                                            .font(.system(size: 11, weight: .bold))
+                                        Text("Tap Pair to sync keys")
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        WireGuardManager.shared.pair(discovered: host)
+                                    } label: {
+                                        Text("Pair")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(Color.accentColor.opacity(0.16))
+                                            .cornerRadius(10)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(10)
+                                .background(Color.white.opacity(0.04))
+                                .cornerRadius(10)
+                            }
+                        }
+                    }
+
+                    if !WireGuardManager.shared.peers.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("PAIRED")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                            ForEach(WireGuardManager.shared.peers) { peer in
+                                HStack {
+                                    Text(peer.name)
+                                        .font(.system(size: 11, weight: .bold))
+                                    Spacer()
+                                    Text(peer.vmSubnet)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(10)
+                                .background(Color.white.opacity(0.04))
+                                .cornerRadius(10)
+                            }
+                        }
+                    }
+
+                    if showConfig {
+                        TextEditor(text: .constant(WireGuardManager.shared.exportConfig()))
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(height: 180)
+                            .scrollContentBackground(.hidden)
+                            .padding(10)
+                            .background(Color.white.opacity(0.04))
+                            .cornerRadius(10)
+                    }
+                }
+                .padding(20)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        )
+                )
+                .padding(.horizontal)
+
+                if VMManager.shared.virtualMachines.isEmpty {
+                    ContentUnavailableView("No Network Active", systemImage: "network.badge.shield.half.filled", description: Text("Deploy nodes to visualize the cluster network"))
+                        .padding(.top, 100)
+                } else {
+                    LazyVStack(spacing: 16) {
+                        ForEach(VMManager.shared.virtualMachines) { vm in
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack {
+                                    Label(vm.name, systemImage: "server.rack")
+                                        .font(.headline)
+                                    Spacer()
+                                    if vm.state == .running {
+                                        HStack(spacing: 4) {
+                                            Circle().fill(.green).frame(width: 8, height: 8)
+                                            Text("Link Active").font(.caption2).bold()
+                                        }
+                                        .foregroundStyle(.green)
+                                    }
+                                }
+                                
+                                HStack(spacing: 20) {
+                                    NetworkDetailItem(label: "IP ADDRESS", value: vm.ipAddress, icon: "number")
+                                    NetworkDetailItem(label: "GATEWAY", value: vm.gateway, icon: "arrow.up.left.and.arrow.down.right")
+                                    NetworkDetailItem(label: "INTERFACE", value: vm.networkInterfaceBSDName, icon: "appletvremote.gen1")
+                                }
+                                
+                                Divider().opacity(0.1)
+                                
+                                HStack(spacing: 20) {
+                                    NetworkDetailItem(label: "TYPE", value: vm.connectionType, icon: vm.networkInterfaceType.icon)
+                                    NetworkDetailItem(label: "SPEED", value: vm.networkSpeed, icon: "gauge.with.dots.needle.33percent")
+                                    NetworkDetailItem(label: "DNS", value: vm.dns.joined(separator: ", "), icon: "globe")
+                                }
+                            }
+                            .padding(20)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16)
+                                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                    )
+                            )
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            .padding(.vertical)
+        }
+        .onAppear {
+            WireGuardManager.shared.startDiscovery()
+        }
+    }
+}
+
+struct NetworkDetailItem: View {
+    let label: String
+    let value: String
+    let icon: String
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 8))
+                Text(label)
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(.secondary)
+            
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .fontWeight(.semibold)
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -596,14 +918,15 @@ struct StatusBadge: View {
 }
 
 struct VMConfigForm: View {
-    @Environment(\.dismiss) private var dismiss
+    @Binding var isPresented: Bool
     
     @State private var vmName: String = ""
     @State private var cpuCount: Double = 4
     @State private var memoryGB: Double = 4
-    @State private var systemDiskGB: Double = 64
-    @State private var dataDiskGB: Double = 100
+    @State private var systemDiskGB: Double = 10
+    @State private var dataDiskGB: Double = 10
     @State private var isMaster: Bool = false
+    @State private var selectedDistro: VirtualMachine.LinuxDistro = .debian13
     @State private var selectedInterfaceIndex: Int = 0
     @State private var errorMessage: String? = nil
     @State private var isDeploying: Bool = false
@@ -615,276 +938,113 @@ struct VMConfigForm: View {
     private let freeDisk = Double(HostResources.freeDiskSpaceGB)
     private let interfaces = HostResources.getNetworkInterfaces()
     
-    private var isISOAuthorized: Bool {
-        VMManager.shared.authorizedISOURL != nil || Bundle.main.url(forResource: "debian-13.1.0-arm64-netinst", withExtension: "iso") != nil
-    }
-    
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Deploy New Node")
-                        .font(.title2.bold())
-                    Text("Debian 13 Trixie Server Template")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(24)
-            .background(.ultraThinMaterial)
-            
-            ScrollView {
-                VStack(spacing: 24) {
-                    // ISO Authorization Warning
-                    if !isISOAuthorized {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Image(systemName: "lock.shield.fill")
-                                    .foregroundStyle(.orange)
-                                Text("ISO Authorization Required")
-                                    .font(.headline)
-                            }
-                            Text("Due to macOS Sandboxing, you must explicitly authorize the Debian 13 ISO before deployment can begin.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            
-                            Button {
-                                showingISOImporter = true
-                            } label: {
-                                Label("Select & Authorize ISO", systemImage: "doc.badge.plus")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        .padding()
-                        .background(Color.orange.opacity(0.1))
-                        .cornerRadius(12)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.3), lineWidth: 1))
-                    }
-
-                    // Role Selection
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Node Role", systemImage: "rectangle.stack.badge.person.crop")
-                            .font(.headline)
-                        
-                        HStack(spacing: 12) {
-                            RoleButton(
-                                title: "Control Plane",
-                                subtitle: "K3s Master / API",
-                                icon: "crown.fill",
-                                isSelected: isMaster,
-                                color: .accentColor
-                            ) {
-                                isMaster = true
-                            }
-                            
-                            RoleButton(
-                                title: "Worker Node",
-                                subtitle: "K3s Agent / Storage",
-                                icon: "shippingbox.fill",
-                                isSelected: !isMaster,
-                                color: .secondary
-                            ) {
-                                isMaster = false
-                            }
-                        }
-                        
-                        if isMaster && VMManager.shared.virtualMachines.contains(where: { $0.isMaster }) {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                Text("A Control Plane already exists in this cluster. Multiple masters require HA configuration.")
-                                    .font(.caption2)
-                            }
-                            .foregroundStyle(.orange)
-                            .padding(.top, 4)
-                        }
-                    }
-                    
-                    Divider().opacity(0.1)
-                    
-                    // Name Section
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Node Identity", systemImage: "tag.fill")
-                            .font(.headline)
-                        
-                        TextField("Enter Node Name", text: $vmName)
-                            .textFieldStyle(.plain)
-                            .padding()
-                            .background(Color.white.opacity(0.05))
-                            .cornerRadius(8)
-                    }
-                    
-                    Divider().opacity(0.1)
-                    
-                    // Hardware Sliders
-                    VStack(spacing: 20) {
-                        ConfigSlider(
-                            label: "Compute Cores",
-                            value: $cpuCount,
-                            range: 1...Double(HostResources.cpuCount),
-                            step: 1,
-                            unit: "Cores",
-                            icon: "memorychip",
-                            safeMax: maxCores
-                        )
-                        
-                        ConfigSlider(
-                            label: "Memory (RAM)",
-                            value: $memoryGB,
-                            range: 2...Double(HostResources.totalMemoryGB),
-                            step: 2,
-                            unit: "GB",
-                            icon: "bolt.fill",
-                            safeMax: maxRAM
-                        )
-                        
-                        ConfigSlider(
-                            label: "System Disk",
-                            value: $systemDiskGB,
-                            range: 20...freeDisk,
-                            step: 4,
-                            unit: "GB",
-                            icon: "internaldrive",
-                            safeMax: freeDisk * 0.8
-                        )
-                        
-                        ConfigSlider(
-                            label: "Data Disk (Longhorn)",
-                            value: $dataDiskGB,
-                            range: 20...freeDisk,
-                            step: 10,
-                            unit: "GB",
-                            icon: "externaldrive",
-                            safeMax: freeDisk * 0.8
-                        )
-                    }
-                    
-                    Divider().opacity(0.1)
-                    
-                    // Network Selection
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Cluster Fabric", systemImage: "network")
-                            .font(.headline)
-                        
-                        Picker("Select Interface", selection: $selectedInterfaceIndex) {
-                            ForEach(0..<interfaces.count, id: \.self) { index in
-                                HStack {
-                                    Image(systemName: interfaces[index].type.icon)
-                                    Text(interfaces[index].name)
-                                    if interfaces[index].isActive {
-                                        Text("(Active)")
-                                            .font(.caption2.bold())
-                                            .foregroundStyle(.green)
-                                    }
-                                }
-                                .tag(index)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .padding(8)
-                        .background(Color.white.opacity(0.05))
-                        .cornerRadius(8)
-                        
-                        Text("Recommended: \(interfaces[selectedInterfaceIndex].type == .ethernet || interfaces[selectedInterfaceIndex].type == .thunderbolt ? "Ethernet/Thunderbolt for high-speed cluster storage." : "WiFi may limit Longhorn performance.")")
-                            .font(.caption2)
+        HStack {
+            Spacer()
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Deploy Node")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                        Text("Select OS and Resources")
+                            .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Button {
+                        withAnimation { isPresented = false }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(24)
-            }
-            
-            // Footer
-            VStack(spacing: 12) {
-                if let error = errorMessage {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text(error)
-                            .font(.caption)
+                
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 24) {
+                        // Distro Picker
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("DISTRIBUTION")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                            
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 12) {
+                                    ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
+                                        DistroCard(distro: distro, isSelected: selectedDistro == distro) {
+                                            selectedDistro = distro
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Identity
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("IDENTITY")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                            
+                            TextField("Node Name", text: $vmName)
+                                .textFieldStyle(.plain)
+                                .font(.system(.body, design: .monospaced))
+                                .padding(12)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(8)
+                        }
+                        
+                        // Role
+                        HStack(spacing: 12) {
+                            RoleButtonMinimal(title: "Master", isSelected: isMaster) { isMaster = true }
+                            RoleButtonMinimal(title: "Worker", isSelected: !isMaster) { isMaster = false }
+                        }
+                        
+                        // Resources
+                        VStack(spacing: 20) {
+                            ConfigSlider(label: "Cores", value: $cpuCount, range: 1...Double(HostResources.cpuCount), step: 1, unit: "", icon: "cpu", safeMax: maxCores)
+                            ConfigSlider(label: "RAM", value: $memoryGB, range: 2...Double(HostResources.totalMemoryGB), step: 2, unit: "GB", icon: "bolt.fill", safeMax: maxRAM)
+                            ConfigSlider(label: "Disk Size", value: $systemDiskGB, range: 10...200, step: 10, unit: "GB", icon: "internaldrive", safeMax: 100)
+                        }
                     }
-                    .foregroundStyle(.red)
-                    .padding(.top, 8)
+                    .padding(.horizontal, 24)
                 }
                 
-                Divider().opacity(0.1)
-                
+                // Deploy Button
                 Button {
                     deploy()
                 } label: {
                     HStack {
                         if isDeploying {
-                            ProgressView()
-                                .controlSize(.small)
-                                .padding(.trailing, 8)
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else {
+                            Text("DEPLOY NODE")
+                                .font(.system(size: 13, weight: .black))
                         }
-                        Text(isDeploying ? "Provisioning..." : "Create & Deploy Node")
-                        Image(systemName: "arrow.right.circle.fill")
                     }
-                    .font(.headline)
                     .frame(maxWidth: .infinity)
-                    .padding()
+                    .padding(.vertical, 14)
+                    .background(Color.accentColor)
+                    .cornerRadius(10)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color.accentColor)
-                .disabled(isDeploying || !isISOAuthorized)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 24)
+                .buttonStyle(.plain)
+                .disabled(isDeploying)
+                .padding(24)
             }
+            .frame(width: 320)
             .background(.ultraThinMaterial)
-        }
-        .frame(width: 450, height: 750)
-        .fileImporter(
-            isPresented: $showingISOImporter,
-            allowedContentTypes: [.iso],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                // Start accessing before saving bookmark to ensure we have permission
-                let didStartAccess = url.startAccessingSecurityScopedResource()
-                defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
-                
-                VMManager.shared.authorizedISOURL = url
-            }
+            .overlay(Rectangle().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
         }
         .onAppear {
-            if vmName.isEmpty {
-                vmName = "mlv-node-\(Int.random(in: 10...99))"
-            }
-            
-            // Auto-detect the best network interface
-            if let activeIndex = interfaces.firstIndex(where: { $0.isActive }) {
-                selectedInterfaceIndex = activeIndex
-            } else {
-                selectedInterfaceIndex = 0
-            }
-            
-            // Set reasonable defaults within safe zones
-            cpuCount = min(4, maxCores)
-            memoryGB = min(4, maxRAM)
-            
-            // Suggest role: if no master exists, suggest master
-            if !VMManager.shared.virtualMachines.contains(where: { $0.isMaster }) {
-                isMaster = true
-            } else {
-                isMaster = false
-            }
+            if vmName.isEmpty { vmName = "node-\(Int.random(in: 100...999))" }
         }
     }
     
     private func deploy() {
-        let interface = interfaces[selectedInterfaceIndex]
+        let interface = interfaces.first ?? HostResources.getNetworkInterfaces()[0]
         isDeploying = true
-        errorMessage = nil
-        
         Task {
             do {
                 _ = try await VMManager.shared.createLinuxVM(
@@ -892,18 +1052,58 @@ struct VMConfigForm: View {
                     cpus: Int(cpuCount),
                     ramGB: Int(memoryGB),
                     sysDiskGB: Int(systemDiskGB),
-                    dataDiskGB: Int(dataDiskGB),
+                    dataDiskGB: Int(systemDiskGB), // Sync data disk with system disk as per simplified form
                     isMaster: isMaster,
+                    distro: selectedDistro,
                     networkType: interface.type,
-                    bsdName: interface.bsdName,
-                    networkSpeed: interface.speed
+                    bsdName: interface.bsdName
                 )
-                dismiss()
+                withAnimation { isPresented = false }
             } catch {
                 errorMessage = error.localizedDescription
                 isDeploying = false
             }
         }
+    }
+}
+
+struct DistroCard: View {
+    let distro: VirtualMachine.LinuxDistro
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: distro.icon == "debian" ? "circle.grid.cross" : (distro.icon == "ubuntu" ? "circle.circle" : "sparkles"))
+                    .font(.title2)
+                Text(distro.rawValue.components(separatedBy: " ")[0])
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .frame(width: 80, height: 80)
+            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.white.opacity(0.05))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct RoleButtonMinimal: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isSelected ? Color.accentColor : Color.white.opacity(0.05))
+                .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -917,32 +1117,34 @@ struct RoleButton: View {
     
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: icon)
-                        .font(.title2)
+                        .font(.system(size: 20))
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
                     Spacer()
                     if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 6, height: 6)
                     }
                 }
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.headline)
+                        .font(.system(size: 13, weight: .bold))
                     Text(subtitle)
-                        .font(.caption2)
+                        .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding()
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.white.opacity(0.05))
-            .cornerRadius(12)
+            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.white.opacity(0.03))
+            .cornerRadius(14)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -959,49 +1161,20 @@ struct ConfigSlider: View {
     let safeMax: Double
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Label(label, systemImage: icon)
-                    .font(.subheadline.bold())
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(Int(value)) \(unit)")
-                    .font(.system(.subheadline, design: .monospaced))
+                Text("\(Int(value))\(unit)")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundStyle(value > safeMax ? .red : Color.accentColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background((value > safeMax ? Color.red : Color.accentColor).opacity(0.1))
-                    .cornerRadius(4)
             }
-            
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    // Track background
-                    Capsule()
-                        .fill(Color.white.opacity(0.1))
-                        .frame(height: 4)
-                    
-                    // Safe zone (Green)
-                    Capsule()
-                        .fill(Color.green.opacity(0.3))
-                        .frame(width: geometry.size.width * CGFloat((safeMax - range.lowerBound) / (range.upperBound - range.lowerBound)), height: 4)
-                    
-                    // Danger zone (Red)
-                    Capsule()
-                        .fill(Color.red.opacity(0.3))
-                        .frame(width: geometry.size.width * CGFloat((range.upperBound - safeMax) / (range.upperBound - range.lowerBound)), height: 4)
-                        .offset(x: geometry.size.width * CGFloat((safeMax - range.lowerBound) / (range.upperBound - range.lowerBound)))
-                }
-            }
-            .frame(height: 4)
             
             Slider(value: $value, in: range, step: step)
                 .tint(value > safeMax ? .red : Color.accentColor)
-            
-            if value > safeMax {
-                Text("Warning: Exceeding recommended host reservation")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
+                .controlSize(.small)
         }
     }
 }

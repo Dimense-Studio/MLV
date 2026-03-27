@@ -151,15 +151,27 @@ struct VMConsoleWindow: View {
                 if vm.needsUserInteraction && !vm.isInstalled {
                     VStack {
                         Spacer()
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text("Installer needs attention. Switch to Serial/Graphics to respond.")
-                                .font(.headline)
-                            Button("Acknowledge") {
-                                vm.needsUserInteraction = false
+                        VStack(spacing: 12) {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text("Installer needs attention. Switch to Serial/Graphics to respond.")
+                                    .font(.headline)
                             }
-                            .buttonStyle(.borderedProminent)
+                            
+                            HStack(spacing: 16) {
+                                Button {
+                                    VMManager.shared.fetchInstallerLogs(for: vm)
+                                } label: {
+                                    Label("Fetch Syslog Diagnostics", systemImage: "doc.text.magnifyingglass")
+                                }
+                                .buttonStyle(.bordered)
+                                
+                                Button("Acknowledge") {
+                                    vm.needsUserInteraction = false
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
                         }
                         .padding()
                         .background(.ultraThinMaterial)
@@ -186,6 +198,16 @@ struct VMConsoleWindow: View {
         .frame(minWidth: 1024, minHeight: 768)
         .background(Color.black)
         .preferredColorScheme(.dark)
+        .onAppear {
+            if vm.isInstalled {
+                selectedTab = 1
+            }
+        }
+        .onChange(of: vm.isInstalled) {
+            if vm.isInstalled {
+                selectedTab = 1
+            }
+        }
     }
 }
 
@@ -200,7 +222,7 @@ struct DeploymentProgressView: View {
                     .foregroundStyle(Color.accentColor)
                     .symbolEffect(.bounce, options: .repeating)
                 
-                Text("Provisioning Node")
+                Text("Installing Node")
                     .font(.title2.bold())
                 
                 Text("Debian 13 Trixie + K3s + Longhorn")
