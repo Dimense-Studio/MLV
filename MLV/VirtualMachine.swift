@@ -14,15 +14,106 @@ enum VMState: Equatable {
     }
 }
 
+enum VMStage: String, Codable, Equatable {
+    case new
+    case downloadingISO
+    case stagingISO
+    case configuring
+    case installing
+    case installed
+    case rebooting
+    case running
+    case stopped
+    case crashed
+    case error
+}
+
+enum VMNetworkMode: String, Codable, CaseIterable {
+    case nat = "NAT"
+    case bridge = "Bridge"
+}
+
+enum VMClusterRole: String, Codable, CaseIterable {
+    case master = "Master"
+    case node = "Node"
+}
+
 @Observable
 class VirtualMachine: Identifiable {
-    let id = UUID()
+    let id: UUID
     let name: String
-    let isoURL: URL
+    var isoURL: URL
     var state: VMState = .stopped
     var vzVirtualMachine: VZVirtualMachine?
+    var vzDelegate: VMRuntimeDelegate?
     var serialWritePipe: Pipe?
     var consoleOutput: String = ""
+    
+    var stage: VMStage = .new {
+        didSet {
+            persist()
+        }
+    }
+    
+    var networkMode: VMNetworkMode = .nat {
+        didSet { persist() }
+    }
+    
+    var bridgeInterfaceName: String? = nil {
+        didSet { persist() }
+    }
+
+    var clusterRole: VMClusterRole = .node {
+        didSet { persist() }
+    }
+
+    var autoStartOnLaunch: Bool = false {
+        didSet { persist() }
+    }
+    
+    var wgControlPrivateKeyBase64: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgControlPublicKeyBase64: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgControlAddressCIDR: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgControlListenPort: Int = 51820 {
+        didSet { persist() }
+    }
+    
+    var wgControlHostForwardPort: Int = 0 {
+        didSet { persist() }
+    }
+    
+    var wgDataPrivateKeyBase64: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgDataPublicKeyBase64: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgDataAddressCIDR: String? = nil {
+        didSet { persist() }
+    }
+    
+    var wgDataListenPort: Int = 51821 {
+        didSet { persist() }
+    }
+    
+    var wgDataHostForwardPort: Int = 0 {
+        didSet { persist() }
+    }
+
+    var terminalConsoleHostPort: Int = 0 {
+        didSet { persist() }
+    }
     
     var isInstalled: Bool {
         get {
@@ -31,12 +122,14 @@ class VirtualMachine: Identifiable {
         }
         set {
             guard let dir = vmDirectory else { return }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let tagURL = dir.appendingPathComponent("installed.tag")
             if newValue {
-                try? "".write(to: tagURL, atomically: true, encoding: .utf8)
+                try? "installed\n".write(to: tagURL, atomically: true, encoding: .utf8)
             } else {
                 try? FileManager.default.removeItem(at: tagURL)
             }
+            persist()
         }
     }
     
@@ -88,7 +181,7 @@ class VirtualMachine: Identifiable {
     var dataDiskSizeGB: Int = 100
     var isMaster: Bool = false
     
-    enum LinuxDistro: String, CaseIterable, Identifiable {
+    enum LinuxDistro: String, CaseIterable, Identifiable, Codable {
         case debian13 = "Debian 13 (Trixie)"
         case alpine = "Alpine Linux (Edge)"
         case ubuntu = "Ubuntu Server (24.04)"
@@ -125,21 +218,44 @@ class VirtualMachine: Identifiable {
     }
     
     var selectedDistro: LinuxDistro = .debian13
-    var networkInterfaceType: HostResources.NetworkInterface.InterfaceType = .ethernet
-    var networkInterfaceBSDName: String = "en0"
-    var networkSpeed: String = "10 Gbps"
     
     var vmDirectory: URL? {
-        let containerDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-        return containerDir.appendingPathComponent("mlv-\(id.uuidString)", isDirectory: true)
+        return VMStorageManager.shared.getVMRootDirectory(for: id)
+    }
+
+    private var stageTagURL: URL? {
+        vmDirectory?.appendingPathComponent("stage.tag")
+    }
+
+    func persist() {
+        // Only persist if we are already in the VMManager's list
+        // and avoid infinite loops by checking if the metadata is actually different
+        Task { @MainActor in
+            VMStatePersistence.shared.saveVMs(VMManager.shared.virtualMachines)
+            
+            // Also persist stage to stage.tag for redundancy/backwards compatibility
+            if let url = stageTagURL {
+                try? stage.rawValue.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
     }
     
-    init(name: String, isoURL: URL, cpus: Int = 4, ramGB: Int = 4, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
+    init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramGB: Int = 4, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
+        self.id = id
         self.name = name
         self.isoURL = isoURL
         self.cpuCount = cpus
         self.memorySizeGB = ramGB
         self.systemDiskSizeGB = sysDiskGB
         self.dataDiskSizeGB = dataDiskGB
+        
+        // Try to load stage from tag if it exists
+        let containerDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        let vmDir = containerDir.appendingPathComponent("mlv-\(id.uuidString)", isDirectory: true)
+        let tagURL = vmDir.appendingPathComponent("stage.tag")
+        if let raw = try? String(contentsOf: tagURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let loaded = VMStage(rawValue: raw) {
+            self.stage = loaded
+        }
     }
 }

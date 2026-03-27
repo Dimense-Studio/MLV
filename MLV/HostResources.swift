@@ -88,6 +88,18 @@ struct HostResources {
         getIPAddress(for: bsdName)
     }
     
+    static func preferredIPv4Address(preferredTypes: [NetworkInterface.InterfaceType]) -> String? {
+        let active = getNetworkInterfaces().filter { $0.isActive }
+        for t in preferredTypes {
+            if let match = active.first(where: { $0.type == t }),
+               let ip = ipAddress(for: match.bsdName),
+               !ip.isEmpty {
+                return ip
+            }
+        }
+        return active.compactMap { ipAddress(for: $0.bsdName) }.first
+    }
+    
     private static func getIPAddress(for interface: String) -> String? {
         var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?

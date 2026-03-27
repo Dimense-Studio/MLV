@@ -95,9 +95,7 @@ struct ContentView: View {
                 
                 switch selectedTab {
                 case .vms:
-                    VMListView(onConsole: { vm in
-                        openWindow(id: "console", value: vm.id)
-                    })
+                    VMListView()
                     .navigationTitle("Virtual Machines")
                 case .pods:
                     PodsListView()
@@ -141,7 +139,6 @@ struct ContentView: View {
 }
 
 struct VMListView: View {
-    let onConsole: (VirtualMachine) -> Void
     @State private var showingConfigForm = false
     @State private var addButtonGlow = false
     
@@ -207,9 +204,7 @@ struct VMListView: View {
                                 .padding(.top, 100)
                         } else {
                             ForEach(VMManager.shared.virtualMachines) { vm in
-                                VMCard(vm: vm, onConsole: {
-                                    onConsole(vm)
-                                })
+                                VMCard(vm: vm)
                             }
                         }
                     }
@@ -240,8 +235,9 @@ struct VMListView: View {
 
 struct VMCard: View {
     let vm: VirtualMachine
-    let onConsole: () -> Void
+    @Environment(\.openWindow) private var openWindow
     @State private var showingDeleteConfirmation = false
+    @State private var showingDebugLogs = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -270,6 +266,14 @@ struct VMCard: View {
                             .background(Color.white.opacity(0.08))
                             .foregroundStyle(.secondary)
                             .cornerRadius(4)
+                        
+                        Text(vm.stage.rawValue.uppercased())
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.accentColor)
+                            .cornerRadius(4)
                     }
                     Text(vm.isInstalled ? vm.selectedDistro.rawValue : "Provisioning System...")
                         .font(.caption)
@@ -278,6 +282,26 @@ struct VMCard: View {
                 Spacer()
                 
                 HStack(spacing: 8) {
+                    Toggle("Autostart", isOn: Binding(get: { vm.autoStartOnLaunch }, set: { vm.autoStartOnLaunch = $0 }))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .labelsHidden()
+                        .help("Start VM automatically when MLV launches")
+                    Button {
+                        openWindow(id: "console", value: vm.id)
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Image(systemName: "display")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open GUI console")
+                    Button {
+                        showingDebugLogs = true
+                    } label: {
+                        Image(systemName: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show debug logs")
                     Button {
                         showingDeleteConfirmation = true
                     } label: {
@@ -299,12 +323,18 @@ struct VMCard: View {
                 Label("\(vm.dataDiskSizeGB) GB Data", systemImage: "externaldrive")
                 
                 Spacer()
-                
-                HStack(spacing: 4) {
-                    Image(systemName: vm.networkInterfaceType.icon)
-                    Text(vm.networkSpeed)
+                HStack(spacing: 6) {
+                    SymbolImage(
+                        name: vm.networkMode == .bridge ? "point.3.connected.trianglepath" : "arrow.trianglehead.2.clockwise.rotate.90",
+                        fallback: vm.networkMode == .bridge ? "cable.connector" : "arrow.trianglehead.2.clockwise.rotate.90"
+                    )
+                    Text(vm.networkMode.rawValue)
                 }
                 .foregroundStyle(Color.accentColor)
+                if vm.networkMode == .bridge {
+                    Text(vm.bridgeInterfaceName ?? "No interface")
+                        .foregroundStyle(.secondary)
+                }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -400,26 +430,27 @@ struct VMCard: View {
                     .controlSize(.regular)
                     
                     Spacer()
-                    
-                    Button {
-                        onConsole()
-                    } label: {
-                        Label("Console", systemImage: "terminal.fill")
-                            .padding(.horizontal, 8)
+                    HStack(spacing: 8) {
+                        Text("nc 127.0.0.1 \(vm.terminalConsoleHostPort)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        
+                        Button {
+                            TerminalLauncher.openAndRun("nc 127.0.0.1 \(vm.terminalConsoleHostPort)")
+                        } label: {
+                            Image(systemName: "terminal")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Open macOS Terminal and attach to VM console")
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             }
             .controlSize(.regular)
         }
         .padding(20)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                )
+            DarkGlassBackground(cornerRadius: 16)
         )
         .confirmationDialog("Are you sure?", isPresented: $showingDeleteConfirmation) {
             Button("Delete VM and all Disks", role: .destructive) {
@@ -428,6 +459,48 @@ struct VMCard: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will permanently delete the virtual machine and all associated disk images (system.img and data.img).")
+        }
+        .sheet(isPresented: $showingDebugLogs) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(vm.name)
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(vm.consoleOutput, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    
+                    Button {
+                        vm.consoleOutput = ""
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding()
+                
+                Divider()
+                
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(vm.consoleOutput.isEmpty ? "Waiting for console output..." : vm.consoleOutput)
+                            .font(.system(size: 11, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .id("bottom")
+                    }
+                    .onChange(of: vm.consoleOutput) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
+            .frame(width: 900, height: 600)
         }
     }
 }
@@ -797,14 +870,14 @@ struct NetworkListView: View {
                                 HStack(spacing: 20) {
                                     NetworkDetailItem(label: "IP ADDRESS", value: vm.ipAddress, icon: "number")
                                     NetworkDetailItem(label: "GATEWAY", value: vm.gateway, icon: "arrow.up.left.and.arrow.down.right")
-                                    NetworkDetailItem(label: "INTERFACE", value: vm.networkInterfaceBSDName, icon: "appletvremote.gen1")
+                                    NetworkDetailItem(label: "INTERFACE", value: vm.bridgeInterfaceName ?? "-", icon: "cable.connector")
                                 }
                                 
                                 Divider().opacity(0.1)
                                 
                                 HStack(spacing: 20) {
-                                    NetworkDetailItem(label: "TYPE", value: vm.connectionType, icon: vm.networkInterfaceType.icon)
-                                    NetworkDetailItem(label: "SPEED", value: vm.networkSpeed, icon: "gauge.with.dots.needle.33percent")
+                                    NetworkDetailItem(label: "MODE", value: vm.networkMode.rawValue, icon: vm.networkMode == .bridge ? "point.3.connected.trianglepath" : "arrow.trianglehead.2.clockwise.rotate.90")
+                                    NetworkDetailItem(label: "STATE", value: vm.state.isRunning ? "Running" : "Stopped", icon: "bolt.horizontal")
                                     NetworkDetailItem(label: "DNS", value: vm.dns.joined(separator: ", "), icon: "globe")
                                 }
                             }
@@ -838,7 +911,7 @@ struct NetworkDetailItem: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
-                Image(systemName: icon)
+                SymbolImage(name: icon, fallback: "questionmark")
                     .font(.system(size: 8))
                 Text(label)
                     .font(.system(size: 8, weight: .bold))
@@ -1043,7 +1116,6 @@ struct VMConfigForm: View {
     }
     
     private func deploy() {
-        let interface = interfaces.first ?? HostResources.getNetworkInterfaces()[0]
         isDeploying = true
         Task {
             do {
@@ -1054,9 +1126,7 @@ struct VMConfigForm: View {
                     sysDiskGB: Int(systemDiskGB),
                     dataDiskGB: Int(systemDiskGB), // Sync data disk with system disk as per simplified form
                     isMaster: isMaster,
-                    distro: selectedDistro,
-                    networkType: interface.type,
-                    bsdName: interface.bsdName
+                    distro: selectedDistro
                 )
                 withAnimation { isPresented = false }
             } catch {

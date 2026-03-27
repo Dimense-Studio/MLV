@@ -4,7 +4,6 @@ import Virtualization
 struct VMConsoleWindow: View {
     let vm: VirtualMachine
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedTab = 0
     @State private var showingProgressOverlay = true
     
     var body: some View {
@@ -26,13 +25,6 @@ struct VMConsoleWindow: View {
                 
                 Spacer()
                 
-                Picker("", selection: $selectedTab) {
-                    Text("Graphics").tag(0)
-                    Text("Serial").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-                
                 if !vm.isInstalled {
                     Button {
                         showingProgressOverlay.toggle()
@@ -44,20 +36,7 @@ struct VMConsoleWindow: View {
                     .padding(.leading, 8)
                 }
                 
-                if selectedTab == 1 {
-                    Button {
-                        vm.consoleOutput = ""
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .help("Clear Console")
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
-                }
-                
                 Button {
-                    // Force a UI refresh by toggling a state or just dismissing/reopening
-                    // For now, we'll just add a log entry to trigger an update
                     vm.addLog("Refreshing console view...")
                 } label: {
                     Image(systemName: "viewfinder")
@@ -109,17 +88,9 @@ struct VMConsoleWindow: View {
                 // Actual VM Console (Always running in background)
                 Group {
                     if let vzVM = vm.vzVirtualMachine {
-                        // Always keep GraphicsView in the hierarchy but hide it if needed
-                        // This prevents the "0x0 scanout" error and ViewBridge disconnects
                         VMGraphicsView(virtualMachine: vzVM, isOverlayShowing: showingProgressOverlay && !vm.isInstalled)
-                            .opacity(selectedTab == 0 ? 1 : 0)
                             .background(Color.black)
-                            .allowsHitTesting(selectedTab == 0 && (!showingProgressOverlay || vm.isInstalled))
-                        
-                        if selectedTab == 1 {
-                            VMSerialConsoleView(vm: vm)
-                                .background(Color.black)
-                        }
+                            .allowsHitTesting(!showingProgressOverlay || vm.isInstalled)
                     } else {
                         VStack(spacing: 20) {
                             ProgressView()
@@ -155,7 +126,7 @@ struct VMConsoleWindow: View {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.orange)
-                                Text("Installer needs attention. Switch to Serial/Graphics to respond.")
+                                Text("Installer needs attention. Use the GUI console to respond.")
                                     .font(.headline)
                             }
                             
@@ -198,16 +169,6 @@ struct VMConsoleWindow: View {
         .frame(minWidth: 1024, minHeight: 768)
         .background(Color.black)
         .preferredColorScheme(.dark)
-        .onAppear {
-            if vm.isInstalled {
-                selectedTab = 1
-            }
-        }
-        .onChange(of: vm.isInstalled) {
-            if vm.isInstalled {
-                selectedTab = 1
-            }
-        }
     }
 }
 
@@ -303,82 +264,6 @@ struct DeploymentProgressView: View {
     
     private var currentStepMessage: String {
         vm.deploymentLogs.last?.message ?? "Initializing..."
-    }
-}
-
-struct VMSerialConsoleView: View {
-    let vm: VirtualMachine
-    @State private var inputText: String = ""
-    @FocusState private var isFocused: Bool
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if vm.consoleOutput.isEmpty {
-                            Text("Waiting for console data from \(vm.name)...")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text(vm.consoleOutput)
-                                .font(.system(.body, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        // Scroll anchor
-                        Color.clear.frame(height: 1).id("bottom")
-                    }
-                    .padding()
-                }
-                .onChange(of: vm.consoleOutput) {
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-                }
-            }
-            
-            HStack {
-                Image(systemName: "chevron.right")
-                    .font(.caption.bold())
-                TextField("Enter command...", text: $inputText)
-                    .textFieldStyle(.plain)
-                    .focused($isFocused)
-                    .onSubmit {
-                        sendCommand()
-                    }
-                
-                Button {
-                    sendCommand()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .disabled(inputText.isEmpty)
-            }
-            .padding()
-            .background(Color.white.opacity(0.05))
-        }
-        .background(Color(white: 0.1))
-        .onAppear {
-            isFocused = true
-        }
-    }
-    
-    private func sendCommand() {
-        guard !inputText.isEmpty else { return }
-        guard let pipe = vm.serialWritePipe else {
-            vm.addLog("Error: Serial write pipe not available", isError: true)
-            return
-        }
-        
-        let command = inputText + "\n"
-        if let data = command.data(using: .utf8) {
-            do {
-                try pipe.fileHandleForWriting.write(contentsOf: data)
-                inputText = ""
-            } catch {
-                vm.addLog("Error sending serial command: \(error.localizedDescription)", isError: true)
-            }
-        }
     }
 }
 
