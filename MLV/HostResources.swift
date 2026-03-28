@@ -49,7 +49,7 @@ struct HostResources {
         var interfaces: [NetworkInterface] = []
         
         // Strategy: Detect real active interfaces first
-        let bsdNames = ["en0", "en1", "en2", "en3", "en4", "bridge0"]
+        let bsdNames = ["en0", "en1", "en2", "en3", "en4", "bridge0", "bridge100"]
         
         for bsd in bsdNames {
             if let ip = getIPAddress(for: bsd), !ip.isEmpty {

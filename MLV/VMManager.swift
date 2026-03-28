@@ -12,6 +12,7 @@ class VMManager {
     private var wgControlForwarders: [UUID: UDPPortForwarder] = [:]
     private var wgDataForwarders: [UUID: UDPPortForwarder] = [:]
     private var terminalConsoleServers: [UUID: VMTerminalConsoleServer] = [:]
+    private var wgForwarderTargetIP: [UUID: String] = [:]
     
     // Persistent ISO authorization
     private let isoBookmarkKey = "MLV_ISO_Bookmark"
@@ -249,9 +250,13 @@ class VMManager {
                 }
                 
                 if vm.selectedDistro == .debian13 || vm.selectedDistro == .alpine {
-                    let (kernelURL, initrdURL) = try await extractKernelAndInitrd(from: stagedISOURL, to: vmDir, vm: vm)
-                    if vm.selectedDistro == .debian13 {
-                        try injectPreseed(into: initrdURL, isMaster: vm.isMaster, vm: vm)
+                    do {
+                        let (_, initrdURL) = try await extractKernelAndInitrd(from: stagedISOURL, to: vmDir, vm: vm)
+                        if vm.selectedDistro == .debian13 {
+                            try injectPreseed(into: initrdURL, isMaster: vm.isMaster, vm: vm)
+                        }
+                    } catch {
+                        vm.addLog("Kernel/initrd extraction failed, falling back to EFI installer boot.", isError: true)
                     }
                 }
                 
@@ -425,11 +430,19 @@ class VMManager {
         let guestIP = vm.ipAddress
         if guestIP == "Detecting..." || guestIP.isEmpty { return }
         
+        if let last = wgForwarderTargetIP[vm.id], last != guestIP {
+            wgControlForwarders[vm.id]?.stop()
+            wgControlForwarders[vm.id] = nil
+            wgDataForwarders[vm.id]?.stop()
+            wgDataForwarders[vm.id] = nil
+        }
+        
         if vm.wgControlHostForwardPort > 0, wgControlForwarders[vm.id] == nil {
             do {
                 let fwd = try UDPPortForwarder(listenPort: vm.wgControlHostForwardPort, targetIP: guestIP, targetPort: vm.wgControlListenPort)
                 try fwd.start()
                 wgControlForwarders[vm.id] = fwd
+                wgForwarderTargetIP[vm.id] = guestIP
                 vm.addLog("WireGuard control UDP forwarder active on host port \(vm.wgControlHostForwardPort).")
             } catch {
                 vm.addLog("Failed to start WG control UDP forwarder: \(error.localizedDescription)", isError: true)
@@ -441,6 +454,7 @@ class VMManager {
                 let fwd = try UDPPortForwarder(listenPort: vm.wgDataHostForwardPort, targetIP: guestIP, targetPort: vm.wgDataListenPort)
                 try fwd.start()
                 wgDataForwarders[vm.id] = fwd
+                wgForwarderTargetIP[vm.id] = guestIP
                 vm.addLog("WireGuard data UDP forwarder active on host port \(vm.wgDataHostForwardPort).")
             } catch {
                 vm.addLog("Failed to start WG data UDP forwarder: \(error.localizedDescription)", isError: true)
@@ -520,25 +534,17 @@ class VMManager {
 
     private func downloadISO(from url: URL, to destination: URL, vm: VirtualMachine) async throws {
         vm.addLog("Downloading ISO...")
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
+        let (tempURL, response) = try await URLSession.shared.download(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw VMError.configurationInvalid("Download failed")
         }
         
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            FileManager.default.createFile(atPath: destination.path, contents: nil)
+        // Move downloaded file to destination
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
         }
-        let fileHandle = try FileHandle(forWritingTo: destination)
-        var buffer = Data()
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 1024 * 1024 {
-                try fileHandle.write(contentsOf: buffer)
-                buffer.removeAll()
-            }
-        }
-        if !buffer.isEmpty { try fileHandle.write(contentsOf: buffer) }
-        try fileHandle.close()
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+        vm.addLog("ISO download complete.")
     }
 
     private func streamCopy(from source: URL, to destination: URL) throws {
@@ -559,34 +565,48 @@ class VMManager {
 
         vm.addLog("Extracting installer contents...")
         
+        // Mount the ISO to extract files
+        let mountPoint = tempDir.appendingPathComponent("iso-mount")
+        try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+        
+        // Mount ISO using hdiutil
+        let mountResult = try runProcess(executable: "/usr/bin/hdiutil", arguments: ["attach", isoURL.path, "-mountpoint", mountPoint.path, "-nobrowse", "-readonly"])
+        if mountResult.exitCode != 0 {
+            throw VMError.configurationInvalid("Failed to mount ISO: \(mountResult.stderr)")
+        }
+        
+        defer {
+            // Unmount ISO when done
+            let unmountResult = try? runProcess(executable: "/usr/bin/hdiutil", arguments: ["detach", mountPoint.path, "-force"])
+            if unmountResult == nil || unmountResult?.exitCode != 0 {
+                vm.addLog("Warning: Failed to unmount ISO at \(mountPoint.path)")
+            }
+        }
+        
         let kernelPaths = vm.selectedDistro == .debian13 ? ["install.a64/vmlinuz", "install/vmlinuz"] : ["boot/vmlinuz-virt"]
         let initrdPaths = vm.selectedDistro == .debian13 ? ["install.a64/initrd.gz", "install/initrd.gz"] : ["boot/initramfs-virt"]
         
         var foundKernel = false
         for path in kernelPaths {
-            let result = try runProcess(executable: "/usr/bin/tar", arguments: ["-xf", isoURL.path, "-C", tempDir.path, path])
-            if result.exitCode == 0 {
-                let extracted = tempDir.appendingPathComponent(path)
-                if FileManager.default.fileExists(atPath: extracted.path) {
-                    try? FileManager.default.removeItem(at: kernelURL)
-                    try FileManager.default.moveItem(at: extracted, to: kernelURL)
-                    foundKernel = true
-                    break
-                }
+            let sourceURL = mountPoint.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                try? FileManager.default.removeItem(at: kernelURL)
+                try FileManager.default.copyItem(at: sourceURL, to: kernelURL)
+                foundKernel = true
+                vm.addLog("Found kernel at \(path)")
+                break
             }
         }
         
         var foundInitrd = false
         for path in initrdPaths {
-            let result = try runProcess(executable: "/usr/bin/tar", arguments: ["-xf", isoURL.path, "-C", tempDir.path, path])
-            if result.exitCode == 0 {
-                let extracted = tempDir.appendingPathComponent(path)
-                if FileManager.default.fileExists(atPath: extracted.path) {
-                    try? FileManager.default.removeItem(at: initrdURL)
-                    try FileManager.default.moveItem(at: extracted, to: initrdURL)
-                    foundInitrd = true
-                    break
-                }
+            let sourceURL = mountPoint.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                try? FileManager.default.removeItem(at: initrdURL)
+                try FileManager.default.copyItem(at: sourceURL, to: initrdURL)
+                foundInitrd = true
+                vm.addLog("Found initrd at \(path)")
+                break
             }
         }
         
@@ -594,7 +614,36 @@ class VMManager {
             return (kernelURL, initrdURL)
         }
         
-        throw VMError.configurationInvalid("Failed to extract installer resources.")
+        var kernelCandidate: URL?
+        var initrdCandidate: URL?
+        if let enumerator = FileManager.default.enumerator(at: mountPoint, includingPropertiesForKeys: nil) {
+            for case let url as URL in enumerator {
+                let name = url.lastPathComponent.lowercased()
+                if kernelCandidate == nil && name.contains("vmlinuz") {
+                    kernelCandidate = url
+                } else if initrdCandidate == nil && (name.contains("initrd") || name.contains("initramfs")) {
+                    initrdCandidate = url
+                }
+                if kernelCandidate != nil && initrdCandidate != nil { break }
+            }
+        }
+        if let k = kernelCandidate {
+            try? FileManager.default.removeItem(at: kernelURL)
+            try? FileManager.default.copyItem(at: k, to: kernelURL)
+            foundKernel = true
+            vm.addLog("Found kernel at \(k.path)")
+        }
+        if let i = initrdCandidate {
+            try? FileManager.default.removeItem(at: initrdURL)
+            try? FileManager.default.copyItem(at: i, to: initrdURL)
+            foundInitrd = true
+            vm.addLog("Found initrd at \(i.path)")
+        }
+        if foundKernel && foundInitrd {
+            return (kernelURL, initrdURL)
+        }
+        
+        throw VMError.configurationInvalid("Failed to extract installer resources. Kernel found: \(foundKernel), Initrd found: \(foundInitrd)")
     }
 
     private func injectPreseed(into initrdURL: URL, isMaster: Bool, vm: VirtualMachine) throws {
@@ -639,7 +688,7 @@ class VMManager {
         d-i partman/confirm boolean true
         d-i partman/confirm_nooverwrite boolean true
         d-i pkgsel/include string sudo grub-efi-arm64
-        d-i preseed/late_command string in-target bash -c "cat > /etc/apt/sources.list <<'EOF'\ndeb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\nEOF"; in-target bash -c "\(k3sCommand)"; echo "---MLV_INSTALL_DONE---" > /dev/hvc0
+        d-i preseed/late_command string in-target bash -c "cat > /etc/apt/sources.list <<'EOF'\ndeb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\nEOF"; in-target bash -c "systemctl enable serial-getty@hvc0.service || true"; in-target bash -c "systemctl start serial-getty@hvc0.service || true"; in-target bash -c "\(k3sCommand)"; echo "---MLV_INSTALL_DONE---" > /dev/hvc0
         d-i finish-install/reboot_in_progress note
         d-i debian-installer/exit/poweroff boolean true
         """
@@ -659,7 +708,7 @@ class VMManager {
         let seedDir = vmTempDir.appendingPathComponent("nocloud-seed")
         try? FileManager.default.createDirectory(at: seedDir, withIntermediateDirectories: true)
         
-        let userData = "#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: \(vm.name)\n    username: mlv\n    password: \"$1$WDmB6AfA$d7Ef1wCrtPJdipFSttNJC.\""
+        let userData = "#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: \(vm.name)\n    username: mlv\n    password: \"$1$WDmB6AfA$d7Ef1wCrtPJdipFSttNJC.\"\nruncmd:\n  - [ bash, -c, \"systemctl enable serial-getty@hvc0.service || true\" ]\n  - [ bash, -c, \"systemctl start serial-getty@hvc0.service || true\" ]"
         try userData.write(to: seedDir.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
         try "instance-id: \(vm.id.uuidString)".write(to: seedDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
         
@@ -696,6 +745,7 @@ class VMManager {
         wgDataForwarders[vm.id] = nil
         terminalConsoleServers[vm.id]?.stop()
         terminalConsoleServers[vm.id] = nil
+        wgForwarderTargetIP[vm.id] = nil
         refreshBackgroundExecution()
     }
     

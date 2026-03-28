@@ -62,13 +62,20 @@ class VMConfigurationBuilder {
                 let kernelURL = vmDir.appendingPathComponent("vmlinuz")
                 let initrdURL = vmDir.appendingPathComponent("initrd.gz")
                 
-                // Note: Kernel/Initrd extraction logic should be called before this or handled here.
-                // For now, assume they are there if not installed.
-                let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
-                bootLoader.initialRamdiskURL = initrdURL
-                bootLoader.commandLine = getInstallerCommandLine(for: vm.selectedDistro, isMaster: vm.isMaster)
-                config.bootLoader = bootLoader
-                print("[VMConfigBuilder] INSTALL MODE: Configured for Direct Kernel Boot from ISO")
+                let haveKernel = FileManager.default.fileExists(atPath: kernelURL.path)
+                let haveInitrd = FileManager.default.fileExists(atPath: initrdURL.path)
+                if haveKernel && haveInitrd {
+                    let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
+                    bootLoader.initialRamdiskURL = initrdURL
+                    bootLoader.commandLine = getInstallerCommandLine(for: vm.selectedDistro, isMaster: vm.isMaster)
+                    config.bootLoader = bootLoader
+                    print("[VMConfigBuilder] INSTALL MODE: Direct Kernel Boot (kernel/initrd present)")
+                } else {
+                    let bootLoader = VZEFIBootLoader()
+                    bootLoader.variableStore = efiStore
+                    config.bootLoader = bootLoader
+                    print("[VMConfigBuilder] INSTALL MODE: Fallback to EFI Boot (kernel/initrd missing)")
+                }
                 
             case .ubuntu, .minimal:
                 let bootLoader = VZEFIBootLoader()
@@ -90,25 +97,30 @@ class VMConfigurationBuilder {
         // 3. Network
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         
-        if vm.networkMode == .nat {
-            networkDevice.attachment = VZNATNetworkDeviceAttachment()
-            print("[VMConfigBuilder] Using NAT networking")
-        } else if vm.networkMode == .bridge, let interfaceName = vm.bridgeInterfaceName {
-            if !EntitlementChecker.hasEntitlement("com.apple.vm.networking") {
-                throw VMError.configurationInvalid("Bridged networking requires the 'com.apple.vm.networking' entitlement, but the current app signature does not have it. This entitlement is restricted; without it, VZBridgedNetworkDeviceAttachment cannot be used.")
-            }
-            let interfaces = VZBridgedNetworkInterface.networkInterfaces
-            if interfaces.isEmpty {
-                throw VMError.configurationInvalid("No bridged network interfaces are available to the app. Check app sandbox/signing settings, then restart the app.")
-            }
-            if let interface = interfaces.first(where: { $0.identifier == interfaceName }) {
-                networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: interface)
-                print("[VMConfigBuilder] Using BRIDGED networking on \(interfaceName)")
+        if vm.networkMode == .bridge, let interfaceName = vm.bridgeInterfaceName {
+            if EntitlementChecker.hasEntitlement("com.apple.vm.networking") {
+                let interfaces = VZBridgedNetworkInterface.networkInterfaces
+                if let interface = interfaces.first(where: { $0.identifier == interfaceName }) {
+                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: interface)
+                    print("[VMConfigBuilder] Using BRIDGED networking on \(interfaceName)")
+                } else if let first = interfaces.first {
+                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: first)
+                    vm.bridgeInterfaceName = first.identifier
+                    print("[VMConfigBuilder] Bridge '\(interfaceName)' not found, using '\(first.identifier)'")
+                } else {
+                    vm.networkMode = .nat
+                    networkDevice.attachment = VZNATNetworkDeviceAttachment()
+                    print("[VMConfigBuilder] No bridge interfaces available, falling back to NAT")
+                }
             } else {
-                throw VMError.configurationInvalid("Bridge interface '\(interfaceName)' not found. Available: \(interfaces.map { $0.identifier }.joined(separator: ", "))")
+                vm.networkMode = .nat
+                networkDevice.attachment = VZNATNetworkDeviceAttachment()
+                print("[VMConfigBuilder] Missing entitlement for bridged networking, using NAT")
             }
         } else {
-            throw VMError.configurationInvalid("Network mode is Bridge but no bridge interface is selected.")
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            vm.networkMode = .nat
+            print("[VMConfigBuilder] Using NAT networking")
         }
         
         // Restore persistent MAC address if available
