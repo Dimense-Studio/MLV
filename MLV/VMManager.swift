@@ -145,15 +145,72 @@ class VMManager {
         echo "[NETWORK_STATE]"
         ip -4 addr show
         ip route show
-        ping -c 1 8.8.8.8 | grep "received"
+        cat /etc/resolv.conf
+        echo "[CONNECTIVITY_TEST]"
+        ping -c 2 8.8.8.8 2>&1 | tail -5 || echo "PING_FAILED"
         echo "[PRESEED_CONTENT]"
-        cat /tmp/preseed.cfg
-        echo "[SYSLOG_ERRORS]"
-        grep -E "mirror|netcfg|wget|error|fail|warning" /var/log/syslog | tail -n 100
+        cat /tmp/preseed.cfg 2>/dev/null || echo "PRESEED_NOT_FOUND"
+        echo "[APT_CONFIG]"
+        cat /etc/apt/sources.list 2>/dev/null || echo "SOURCES_NOT_CONFIGURED"
+        echo "[INSTALLER_ERRORS]"
+        grep -E "mirror|netcfg|dhcp|network|error|fail" /var/log/syslog 2>/dev/null | tail -20 || echo "NO_ERRORS_FOUND"
         echo "---DIAG_END---"
         """
         
         if let data = (logCmd + "\n").data(using: .utf8) {
+            try? pipe.fileHandleForWriting.write(contentsOf: data)
+        }
+    }
+    
+    /// Comprehensive troubleshooting for installer issues
+    func dumpInstallerState(for vm: VirtualMachine) {
+        guard let pipe = vm.serialWritePipe else { return }
+        vm.addLog("=== DUMPING INSTALLER STATE FOR DEBUGGING ===")
+        
+        let diagCmd = """
+        echo "=== PRESEED FILE CHECK ==="
+        ls -la /preseed.cfg 2>&1
+        echo "=== PRESEED CONTENT ==="
+        head -30 /preseed.cfg 2>&1
+        echo "=== NETWORK STATE ==="
+        ip link show
+        ip addr show
+        ip route show
+        echo "=== DNS ==="
+        cat /etc/resolv.conf
+        echo "=== MIRROR TEST ==="
+        wget -q -O /dev/null -S http://deb.debian.org/debian/dists/trixie/Release 2>&1 | head -10
+        echo "=== APT CONFIG ==="
+        cat /etc/apt/sources.list 2>/dev/null || echo "sources.list not found"
+        echo "=== KERNEL CMDLINE ==="
+        cat /proc/cmdline
+        echo "=== INSTALLER LOG ==="
+        tail -50 /var/log/syslog 2>/dev/null || tail -50 /var/log/installer/syslog 2>/dev/null
+        """
+        
+        if let data = (diagCmd + "\n").data(using: .utf8) {
+            try? pipe.fileHandleForWriting.write(contentsOf: data)
+        }
+    }
+    
+    func validateInstallerNetwork(for vm: VirtualMachine) {
+        guard let pipe = vm.serialWritePipe else { return }
+        vm.addLog("Validating installer network connectivity...")
+        
+        let testCmd = """
+        echo "---NET_VALIDATE_START---"
+        echo "Testing DHCP..."
+        ip -4 addr show | grep inet || echo "NO_IPV4_ADDRESS"
+        echo "Testing Default Route..."
+        ip route show default || echo "NO_DEFAULT_ROUTE"
+        echo "Testing DNS Resolution..."
+        nslookup deb.debian.org 8.8.8.8 2>&1 | grep -E "Name:|Address:" || echo "DNS_RESOLUTION_FAILED"
+        echo "Testing Mirror Connectivity..."
+        wget -q -O /dev/null http://deb.debian.org/debian/dists/trixie/Release 2>&1 | head -3 || echo "MIRROR_UNREACHABLE"
+        echo "---NET_VALIDATE_END---"
+        """
+        
+        if let data = (testCmd + "\n").data(using: .utf8) {
             try? pipe.fileHandleForWriting.write(contentsOf: data)
         }
     }
@@ -341,6 +398,16 @@ class VMManager {
             }
         }
         
+        // Handle network validation results
+        if vm.consoleOutput.contains("---NET_VALIDATE_START---") && vm.consoleOutput.contains("---NET_VALIDATE_END---") {
+            if let startRange = vm.consoleOutput.range(of: "---NET_VALIDATE_START---"),
+               let endRange = vm.consoleOutput.range(of: "---NET_VALIDATE_END---", options: .backwards) {
+                let validationBlock = String(vm.consoleOutput[startRange.upperBound..<endRange.lowerBound])
+                self.processNetworkValidation(validationBlock, for: vm)
+                vm.consoleOutput.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: "")
+            }
+        }
+        
         // Handle installation progress
         if !vm.isInstalled {
             if str.localizedCaseInsensitiveContains("---MLV_INSTALL_DONE---") {
@@ -452,6 +519,38 @@ class VMManager {
         vm.addLog("Installer Diagnostics received.")
         if diagBlock.contains("could not resolve") {
             vm.addLog("ROOT CAUSE: DNS Failure.", isError: true)
+        }
+    }
+
+    private func processNetworkValidation(_ validationBlock: String, for vm: VirtualMachine) {
+        let lines = validationBlock.components(separatedBy: .newlines)
+        var issues: [String] = []
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            
+            if trimmed.contains("NO_IPV4_ADDRESS") {
+                issues.append("No IPv4 address - DHCP may have failed")
+            } else if trimmed.contains("NO_DEFAULT_ROUTE") {
+                issues.append("No default route configured")
+            } else if trimmed.contains("DNS_RESOLUTION_FAILED") {
+                issues.append("DNS resolution failed for deb.debian.org")
+            } else if trimmed.contains("MIRROR_UNREACHABLE") {
+                issues.append("Mirror deb.debian.org is unreachable")
+            } else if trimmed.contains("inet ") {
+                vm.addLog("✓ IPv4 address configured: \(trimmed)")
+            } else if trimmed.contains("default via") {
+                vm.addLog("✓ Default route: \(trimmed)")
+            }
+        }
+        
+        if !issues.isEmpty {
+            for issue in issues {
+                vm.addLog("⚠ Network Issue: \(issue)", isError: true)
+            }
+        } else {
+            vm.addLog("✓ Network validation passed - connectivity OK")
         }
     }
 
@@ -608,16 +707,17 @@ class VMManager {
         d-i debian-installer/locale string en_US
         d-i keyboard-configuration/xkb-keymap select us
         d-i netcfg/choose_interface select auto
-        d-i netcfg/link_wait_timeout string 60
-        d-i netcfg/dhcp_timeout string 60
+        d-i netcfg/link_wait_timeout string 120
+        d-i netcfg/dhcp_timeout string 120
         d-i netcfg/dhcpv6_timeout string 1
+        d-i netcfg/try_dhcp_v4 string true
         d-i netcfg/get_nameservers string 8.8.8.8 1.1.1.1
         d-i netcfg/get_domain string local
         d-i netcfg/get_hostname string \(isMaster ? "mlv-master" : "mlv-node")
         d-i mirror/country string manual
+        d-i mirror/protocol string http
         d-i mirror/http/hostname string deb.debian.org
         d-i mirror/http/directory string /debian
-        d-i mirror/http/proxy string
         d-i mirror/suite string trixie
         d-i mirror/udeb/suite string trixie
         d-i apt-setup/use_mirror boolean true
@@ -638,8 +738,9 @@ class VMManager {
         d-i partman/choose_partition select finish
         d-i partman/confirm boolean true
         d-i partman/confirm_nooverwrite boolean true
-        d-i pkgsel/include string sudo grub-efi-arm64
-        d-i preseed/late_command string in-target bash -c "cat > /etc/apt/sources.list <<'EOF'\ndeb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\nEOF"; in-target bash -c "\(k3sCommand)"; echo "---MLV_INSTALL_DONE---" > /dev/hvc0
+        d-i pkgsel/include string sudo grub-efi-arm64 curl wget ca-certificates
+        d-i preseed/run string /bin/sh -c 'echo Preseed validation started; apt-get update || true; echo Preseed validation completed'
+        d-i preseed/late_command string in-target bash -c "echo 'deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware' > /etc/apt/sources.list"; in-target bash -c "echo 'deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware' >> /etc/apt/sources.list"; in-target bash -c "echo 'deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware' >> /etc/apt/sources.list"; in-target bash -c "apt-get update 2>&1 | head -20"; in-target bash -c "sleep 10 && for i in 1 2 3; do ping -c 1 8.8.8.8 >/dev/null 2>&1 && break || sleep 5; done"; in-target bash -c "\(k3sCommand) 2>&1 | tee /var/log/k3s-install.log" || echo 'K3s install step completed'; echo '---MLV_INSTALL_DONE---' > /dev/hvc0
         d-i finish-install/reboot_in_progress note
         d-i debian-installer/exit/poweroff boolean true
         """
@@ -648,7 +749,14 @@ class VMManager {
         let preseedFile = tempDir.appendingPathComponent("preseed.cfg")
         try preseed.write(to: preseedFile, atomically: true, encoding: .utf8)
         
-        let shellCmd = "cd \"\(tempDir.path)\" && echo preseed.cfg | cpio -o -H newc > preseed.cpio && cat \"\(initrdURL.path)\" preseed.cpio > initrd_combined.gz"
+        // Correctly handle gzipped initrd: decompress → concatenate preseed cpio → recompress
+        let shellCmd = """
+        cd "\(tempDir.path)" && \
+        gunzip -k "\(initrdURL.path)" -O initrd.decompressed && \
+        find preseed.cfg | cpio -H newc -o 2>/dev/null > preseed.cpio && \
+        cat initrd.decompressed preseed.cpio | gzip > initrd_combined.gz && \
+        rm -f initrd.decompressed preseed.cpio
+        """
         _ = try runProcess(executable: "/bin/sh", arguments: ["-c", shellCmd])
         
         try? FileManager.default.removeItem(at: initrdURL)
