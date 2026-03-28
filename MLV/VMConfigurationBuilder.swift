@@ -144,7 +144,7 @@ class VMConfigurationBuilder {
     private func getInstallerCommandLine(for distro: VirtualMachine.LinuxDistro, isMaster: Bool) -> String {
         switch distro {
         case .debian13:
-            return "auto=true priority=critical console=hvc0 console=tty0 earlycon=virtio_console video=1280x720 DEBIAN_FRONTEND=text preseed/file=/preseed.cfg ipv6.disable=1 netcfg/choose_interface=auto netcfg/link_wait_timeout=120 netcfg/dhcp_timeout=120 netcfg/dhcpv6_timeout=1 netcfg/get_nameservers=8.8.8.8 1.1.1.1 mirror/country=manual mirror/protocol=http mirror/http/hostname=deb.debian.org mirror/http/directory=/debian mirror/suite=trixie mirror/udeb/suite=trixie hw-detect/load_firmware=false"
+            return "auto=true priority=critical console=hvc0 console=tty0 earlycon=virtio_console video=1280x720 DEBIAN_FRONTEND=text preseed/file=/preseed.cfg ipv6.disable=1 netcfg/choose_interface=auto netcfg/link_wait_timeout=60 netcfg/dhcp_timeout=60 netcfg/dhcpv6_timeout=1 netcfg/get_nameservers=8.8.8.8,1.1.1.1 mirror/country=manual mirror/http/hostname=deb.debian.org mirror/http/directory=/debian mirror/suite=trixie mirror/udeb/suite=trixie hw-detect/load_firmware=false"
         case .alpine:
             return "console=hvc0 console=tty0 earlycon=virtio_console"
         default:
