@@ -30,6 +30,7 @@ struct ContentView: View {
         case pods = "Kubernetes Pods"
         case storage = "Distributed Storage"
         case network = "Network Topology"
+        case secrets = "Secrets"
         
         var icon: String {
             switch self {
@@ -37,6 +38,7 @@ struct ContentView: View {
             case .pods: return "shippingbox.fill"
             case .storage: return "externaldrive.connected.to.line.below"
             case .network: return "network"
+            case .secrets: return "key.fill"
             }
         }
     }
@@ -106,6 +108,9 @@ struct ContentView: View {
                 case .network:
                     NetworkListView()
                         .navigationTitle("Network Topology")
+                case .secrets:
+                    SecretsView()
+                        .navigationTitle("Secrets")
                 }
             }
             .background(VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow))
@@ -229,6 +234,86 @@ struct VMListView: View {
         }
         .onAppear {
             addButtonGlow = true
+        }
+    }
+}
+
+struct SecretsView: View {
+    @State private var settings = AppSettingsStore.shared
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Secrets Vault")
+                    .font(.title2.bold())
+                Text("Stored in macOS Keychain")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Zero‑Touch Debian")
+                        .font(.headline)
+                    TextField("Admin username", text: $settings.adminUsername)
+                        .textContentType(.username)
+                    SecureField("Admin password", text: $settings.adminPassword)
+                        .textContentType(.password)
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .cornerRadius(12)
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Placeholder + API Key")
+                            .font(.headline)
+                        Spacer()
+                        Button {
+                            settings.addAPISecretRow()
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    ForEach(Array(settings.apiSecrets.enumerated()), id: \.element.id) { index, item in
+                        HStack(spacing: 8) {
+                            TextField("Placeholder (name/usage)", text: Binding(
+                                get: { settings.apiSecrets[index].placeholder },
+                                set: { settings.apiSecrets[index].placeholder = $0 }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            
+                            SecureField("API Key", text: Binding(
+                                get: { settings.apiSecrets[index].apiKey },
+                                set: { settings.apiSecrets[index].apiKey = $0 }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            
+                            Button {
+                                settings.removeAPISecretRow(id: item.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .cornerRadius(12)
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Notes")
+                        .font(.headline)
+                    Text("Use any placeholder label and any provider key format. Nothing is hardcoded.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .cornerRadius(12)
+            }
+            .padding()
         }
     }
 }
@@ -996,8 +1081,9 @@ struct VMConfigForm: View {
     @State private var vmName: String = ""
     @State private var cpuCount: Double = 4
     @State private var memoryGB: Double = 4
-    @State private var systemDiskGB: Double = 10
-    @State private var dataDiskGB: Double = 10
+    @State private var systemDiskGB: Double = 40
+    @State private var dataDiskGB: Double = 100
+    @State private var useDedicatedLonghornDisk: Bool = true
     @State private var isMaster: Bool = false
     @State private var selectedDistro: VirtualMachine.LinuxDistro = .debian13
     @State private var selectedInterfaceIndex: Int = 0
@@ -1079,7 +1165,16 @@ struct VMConfigForm: View {
                         VStack(spacing: 20) {
                             ConfigSlider(label: "Cores", value: $cpuCount, range: 1...Double(HostResources.cpuCount), step: 1, unit: "", icon: "cpu", safeMax: maxCores)
                             ConfigSlider(label: "RAM", value: $memoryGB, range: 2...Double(HostResources.totalMemoryGB), step: 2, unit: "GB", icon: "bolt.fill", safeMax: maxRAM)
-                            ConfigSlider(label: "Disk Size", value: $systemDiskGB, range: 10...200, step: 10, unit: "GB", icon: "internaldrive", safeMax: 100)
+                            ConfigSlider(label: "System Disk", value: $systemDiskGB, range: 5...200, step: 5, unit: "GB", icon: "internaldrive", safeMax: 120)
+                            Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
+                                .toggleStyle(.switch)
+                            if useDedicatedLonghornDisk {
+                                ConfigSlider(label: "Longhorn Disk", value: $dataDiskGB, range: 5...500, step: 5, unit: "GB", icon: "externaldrive.connected.to.line.below", safeMax: max(5, freeDisk - systemDiskGB - 10))
+                            } else {
+                                Text("Longhorn will use system disk (vda). No dedicated vdb disk.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .padding(.horizontal, 24)
@@ -1124,10 +1219,11 @@ struct VMConfigForm: View {
                     cpus: Int(cpuCount),
                     ramGB: Int(memoryGB),
                     sysDiskGB: Int(systemDiskGB),
-                    dataDiskGB: Int(systemDiskGB), // Sync data disk with system disk as per simplified form
+                    dataDiskGB: useDedicatedLonghornDisk ? Int(dataDiskGB) : 0,
                     isMaster: isMaster,
                     distro: selectedDistro
                 )
+                isDeploying = false
                 withAnimation { isPresented = false }
             } catch {
                 errorMessage = error.localizedDescription

@@ -19,4 +19,3 @@ struct SettingsView: View {
         .frame(width: 520)
     }
 }
-

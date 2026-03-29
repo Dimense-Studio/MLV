@@ -23,7 +23,9 @@ class VMConfigurationBuilder {
         
         // Ensure system/data disks exist
         try VMStorageManager.shared.createSparseDisk(at: systemDiskURL, sizeGiB: vm.systemDiskSizeGB)
-        try VMStorageManager.shared.createSparseDisk(at: dataDiskURL, sizeGiB: vm.dataDiskSizeGB)
+        if vm.dataDiskSizeGB > 0 {
+            try VMStorageManager.shared.createSparseDisk(at: dataDiskURL, sizeGiB: vm.dataDiskSizeGB)
+        }
         
         // EFI Variable Store
         let efiStore: VZEFIVariableStore
@@ -40,9 +42,10 @@ class VMConfigurationBuilder {
         let systemAttachment = try VZDiskImageStorageDeviceAttachment(url: systemDiskURL, readOnly: false)
         storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: systemAttachment))
         
-        // Data Disk
-        let dataAttachment = try VZDiskImageStorageDeviceAttachment(url: dataDiskURL, readOnly: false)
-        storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: dataAttachment))
+        if vm.dataDiskSizeGB > 0 {
+            let dataAttachment = try VZDiskImageStorageDeviceAttachment(url: dataDiskURL, readOnly: false)
+            storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: dataAttachment))
+        }
         
         // Bootloader Configuration
         if vm.isInstalled {
