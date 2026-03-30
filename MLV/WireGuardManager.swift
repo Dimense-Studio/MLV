@@ -133,6 +133,17 @@ final class WireGuardManager {
             peers.append(updated)
         }
         persistPeers()
+        self.writeConfigToDisk()
+    }
+
+    /// Removes peers not in the provided set of IDs
+    func removeStalePeers(currentIDs: Set<String>) {
+        let before = peers.count
+        peers.removeAll { !currentIDs.contains($0.id) }
+        if peers.count != before {
+            persistPeers()
+            writeConfigToDisk()
+        }
     }
 
     func exportConfig() -> String {
@@ -249,3 +260,4 @@ final class WireGuardManager {
         }
     }
 }
+
