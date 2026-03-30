@@ -1,6 +1,7 @@
 import Foundation
 import Virtualization
 import SwiftUI
+import os
 
 enum VMState: Equatable {
     case stopped
@@ -40,6 +41,33 @@ enum VMClusterRole: String, Codable, CaseIterable {
 
 @Observable
 class VirtualMachine: Identifiable {
+    private static let logger = Logger(subsystem: "dimense.net.MLV", category: "VirtualMachine")
+    enum DiskProfile: String, Codable, CaseIterable, Identifiable {
+        case balanced = "Balanced"
+        case durable = "Durable"
+        case maxPerformance = "Max Performance"
+        
+        var id: String { rawValue }
+        
+        @available(macOS 13.0, *)
+        var diskImageCachingMode: VZDiskImageCachingMode {
+            switch self {
+            case .balanced: return .automatic
+            case .durable: return .uncached
+            case .maxPerformance: return .cached
+            }
+        }
+        
+        @available(macOS 13.0, *)
+        var diskImageSynchronizationMode: VZDiskImageSynchronizationMode {
+            switch self {
+            case .balanced: return .fsync
+            case .durable: return .full
+            case .maxPerformance: return .none
+            }
+        }
+    }
+    
     let id: UUID
     let name: String
     var isoURL: URL
@@ -48,6 +76,8 @@ class VirtualMachine: Identifiable {
     var vzDelegate: VMRuntimeDelegate?
     var serialWritePipe: Pipe?
     var consoleOutput: String = ""
+    var lastConsoleActivity: Date = Date()
+    var lastHealthyPoll: Date? = nil
     
     var stage: VMStage = .new {
         didSet {
@@ -171,7 +201,11 @@ class VirtualMachine: Identifiable {
     func addLog(_ message: String, isError: Bool = false) {
         let log = DeploymentLog(message: message, isError: isError)
         deploymentLogs.append(log)
-        print("[\(name)] \(message)")
+        if isError {
+            Self.logger.error("[\(self.name, privacy: .public)] \(message, privacy: .public)")
+        } else {
+            Self.logger.info("[\(self.name, privacy: .public)] \(message, privacy: .public)")
+        }
     }
     
     // Configurable Hardware
@@ -180,6 +214,14 @@ class VirtualMachine: Identifiable {
     var systemDiskSizeGB: Int = 64
     var dataDiskSizeGB: Int = 100
     var isMaster: Bool = false
+    
+    var systemDiskProfile: DiskProfile = .balanced {
+        didSet { persist() }
+    }
+    
+    var dataDiskProfile: DiskProfile = .durable {
+        didSet { persist() }
+    }
     
     enum LinuxDistro: String, CaseIterable, Identifiable, Codable {
         case debian13 = "Debian 13 (Trixie)"
@@ -238,6 +280,18 @@ class VirtualMachine: Identifiable {
                 try? stage.rawValue.write(to: url, atomically: true, encoding: .utf8)
             }
         }
+    }
+    
+    func resetRuntimeState() {
+        vzVirtualMachine = nil
+        vzDelegate = nil
+        serialWritePipe = nil
+        consoleOutput = ""
+        downloadTask?.cancel()
+        downloadTask = nil
+        lastHealthyPoll = nil
+        isConnected = false
+        ipAddress = "Detecting..."
     }
     
     init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramGB: Int = 4, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {

@@ -3,7 +3,6 @@ import Virtualization
 
 struct VMConsoleWindow: View {
     let vm: VirtualMachine
-    @State private var autoScroll = true
     
     var body: some View {
         VStack(spacing: 0) {
@@ -24,35 +23,6 @@ struct VMConsoleWindow: View {
                 ContentUnavailableView("Console not available", systemImage: "display")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            
-            Divider()
-            
-            HStack {
-                Text("Serial Console")
-                    .font(.subheadline.bold())
-                Spacer()
-                Toggle("Auto-scroll", isOn: $autoScroll)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal)
-            .padding(.top, 10)
-            
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(vm.consoleOutput.isEmpty ? "Waiting for console output..." : vm.consoleOutput)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .id("console-bottom")
-                }
-                .onChange(of: vm.consoleOutput) {
-                    if autoScroll {
-                        proxy.scrollTo("console-bottom", anchor: .bottom)
-                    }
-                }
-            }
-            .frame(minHeight: 220)
         }
         .frame(minWidth: 900, minHeight: 700)
     }

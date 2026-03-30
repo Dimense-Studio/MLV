@@ -13,6 +13,8 @@ class VMManager {
     private var wgDataForwarders: [UUID: UDPPortForwarder] = [:]
     private var terminalConsoleServers: [UUID: VMTerminalConsoleServer] = [:]
     private var wgForwarderTargetIP: [UUID: String] = [:]
+    private var serialReadPipes: [UUID: Pipe] = [:]
+    private var pollBuffers: [UUID: String] = [:]
     
     // Persistent ISO authorization
     private let isoBookmarkKey = "MLV_ISO_Bookmark"
@@ -27,12 +29,19 @@ class VMManager {
     }
     
     var clusterToken: String {
-        if let token = UserDefaults.standard.string(forKey: clusterTokenKey) {
-            return token
+        get {
+            if let token = UserDefaults.standard.string(forKey: clusterTokenKey), !token.isEmpty {
+                return token
+            }
+            let newToken = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            UserDefaults.standard.set(newToken, forKey: clusterTokenKey)
+            return newToken
         }
-        let newToken = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        UserDefaults.standard.set(newToken, forKey: clusterTokenKey)
-        return newToken
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return }
+            UserDefaults.standard.set(trimmed, forKey: clusterTokenKey)
+        }
     }
     
     func getAvailableBridgeInterfaces() -> [VZBridgedNetworkInterface] {
@@ -62,6 +71,12 @@ class VMManager {
                 sysDiskGB: meta.systemDiskSizeGB,
                 dataDiskGB: meta.dataDiskSizeGB
             )
+            if let raw = meta.systemDiskProfile, let p = VirtualMachine.DiskProfile(rawValue: raw) {
+                vm.systemDiskProfile = p
+            }
+            if let raw = meta.dataDiskProfile, let p = VirtualMachine.DiskProfile(rawValue: raw) {
+                vm.dataDiskProfile = p
+            }
             vm.selectedDistro = distro
             vm.isMaster = meta.isMaster
             vm.networkMode = VMNetworkMode(rawValue: meta.networkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
@@ -109,8 +124,12 @@ class VMManager {
     private func startDataPolling() {
         Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { _ in
             Task { @MainActor in
-                for vm in self.virtualMachines where vm.state == .running && vm.isInstalled {
-                    self.pollVMData(vm)
+                for vm in self.virtualMachines where vm.state == .running {
+                    self.updateDetectedIPAddress(for: vm)
+                    if vm.isInstalled {
+                        self.pollVMData(vm)
+                        self.evaluateVMHealth(vm)
+                    }
                 }
             }
         }
@@ -137,28 +156,18 @@ class VMManager {
         }
     }
     
-    func fetchInstallerLogs(for vm: VirtualMachine) {
-        guard let pipe = vm.serialWritePipe else { return }
-        vm.addLog("Requesting installer diagnostics...")
+    private func evaluateVMHealth(_ vm: VirtualMachine) {
+        guard vm.state == .running, vm.isInstalled else { return }
+        guard let last = vm.lastHealthyPoll else { return }
+        if Date().timeIntervalSince(last) < 90 { return }
+        if vm.userInitiatedStop { return }
         
-        let logCmd = """
-        echo "---DIAG_START---"
-        echo "[NETWORK_STATE]"
-        ip -4 addr show
-        ip route show
-        ping -c 1 8.8.8.8 | grep "received"
-        echo "[PRESEED_CONTENT]"
-        cat /tmp/preseed.cfg
-        echo "[SYSLOG_ERRORS]"
-        grep -E "mirror|netcfg|wget|error|fail|warning" /var/log/syslog | tail -n 100
-        echo "---DIAG_END---"
-        """
-        
-        if let data = (logCmd + "\n").data(using: .utf8) {
-            try? pipe.fileHandleForWriting.write(contentsOf: data)
+        vm.addLog("Health check timeout. Attempting recovery...", isError: true)
+        Task { @MainActor in
+            try? await self.restartVM(vm)
         }
     }
-
+    
     func createLinuxVM(name: String? = nil, cpus: Int = 4, ramGB: Int = 8, sysDiskGB: Int = 64, dataDiskGB: Int = 100, isMaster: Bool = false, distro: VirtualMachine.LinuxDistro = .debian13) async throws -> VirtualMachine {
         if !VZVirtualMachine.isSupported {
             throw VMError.virtualizationNotSupported
@@ -227,6 +236,8 @@ class VMManager {
         
         vm.addLog("Starting Virtual Machine: \(vm.name)")
         vm.state = .starting
+        vm.ipAddress = "Detecting..."
+        vm.isConnected = false
         refreshBackgroundExecution()
         
         do {
@@ -248,22 +259,8 @@ class VMManager {
                     vm.addLog("Staging ISO to VM storage...")
                     try streamCopy(from: cachedISOURL, to: stagedISOURL)
                 }
-                
-                if vm.selectedDistro == .debian13 || vm.selectedDistro == .alpine {
-                    do {
-                        let (_, initrdURL) = try await extractKernelAndInitrd(from: stagedISOURL, to: vmDir, vm: vm)
-                        if vm.selectedDistro == .debian13 {
-                            try injectPreseed(into: initrdURL, isMaster: vm.isMaster, vm: vm)
-                        }
-                    } catch {
-                        vm.addLog("Kernel/initrd extraction failed, falling back to EFI installer boot.", isError: true)
-                    }
-                }
-                
-                if vm.selectedDistro == .ubuntu {
-                    let masterIP = virtualMachines.first(where: { $0.isMaster })?.ipAddress ?? "192.168.64.2"
-                    _ = try createUbuntuNoCloudSeedISO(in: vmDir, vm: vm, masterIP: masterIP)
-                }
+                vm.needsUserInteraction = true
+                vm.stage = .installing
             } else {
                 vm.addLog("PHASE 2: RUN MODE - Booting from disk.")
             }
@@ -283,6 +280,7 @@ class VMManager {
             configuration.consoleDevices = [consoleDevice]
             
             vm.serialWritePipe = writePipe
+            serialReadPipes[vm.id] = readPipe
             setupSerialPortListener(for: vm, readPipe: readPipe)
             startTerminalConsoleIfNeeded(for: vm, writePipe: writePipe)
 
@@ -298,6 +296,13 @@ class VMManager {
             vm.state = .running
             vm.addLog("Virtualization engine started.")
             refreshBackgroundExecution()
+            updateDetectedIPAddress(for: vm)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                self.updateDetectedIPAddress(for: vm)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                self.updateDetectedIPAddress(for: vm)
+            }
             
         } catch {
             vm.addLog("Start failed: \(error.localizedDescription)", isError: true)
@@ -319,46 +324,30 @@ class VMManager {
                     if vm.consoleOutput.count > 100000 {
                         vm.consoleOutput = String(vm.consoleOutput.suffix(50000))
                     }
-                    self.processConsoleOutput(str, for: vm)
+                    self.processConsoleChunk(str, for: vm)
                 }
             }
         }
     }
     
-    private func processConsoleOutput(_ str: String, for vm: VirtualMachine) {
-        // Handle polling data
-        if vm.consoleOutput.contains("---POLL_START---") && vm.consoleOutput.contains("---POLL_END---") {
-            if let startRange = vm.consoleOutput.range(of: "---POLL_START---"),
-               let endRange = vm.consoleOutput.range(of: "---POLL_END---", options: .backwards) {
-                let block = String(vm.consoleOutput[startRange.lowerBound..<endRange.upperBound])
-                self.parsePollingData(block, for: vm)
-                vm.consoleOutput.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: "")
-            }
+    private func processConsoleChunk(_ chunk: String, for vm: VirtualMachine) {
+        vm.lastConsoleActivity = Date()
+        
+        var buffer = pollBuffers[vm.id, default: ""]
+        buffer.append(chunk)
+        if buffer.count > 400000 {
+            buffer = String(buffer.suffix(200000))
         }
         
-        // Handle diagnostics
-        if vm.consoleOutput.contains("---DIAG_START---") && vm.consoleOutput.contains("---DIAG_END---") {
-            if let startRange = vm.consoleOutput.range(of: "---DIAG_START---"),
-               let endRange = vm.consoleOutput.range(of: "---DIAG_END---", options: .backwards) {
-                let diagBlock = String(vm.consoleOutput[startRange.upperBound..<endRange.lowerBound])
-                self.processInstallerDiagnostics(diagBlock, for: vm)
-                vm.consoleOutput.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: "")
-            }
+        while let startRange = buffer.range(of: "---POLL_START---"),
+              let endRange = buffer.range(of: "---POLL_END---", range: startRange.upperBound..<buffer.endIndex) {
+            let block = String(buffer[startRange.lowerBound..<endRange.upperBound])
+            parsePollingData(block, for: vm)
+            vm.lastHealthyPoll = Date()
+            buffer.removeSubrange(buffer.startIndex..<endRange.upperBound)
         }
         
-        // Handle installation progress
-        if !vm.isInstalled {
-            if str.localizedCaseInsensitiveContains("---MLV_INSTALL_DONE---") {
-                vm.addLog("Installation finished! Rebooting into OS.")
-                vm.isInstalled = true
-                vm.pendingAutoStartAfterInstall = true
-                vm.stage = .rebooting
-                Task { try? await vm.vzVirtualMachine?.stop() }
-            } else if str.localizedCaseInsensitiveContains("---MLV_INSTALL_BOOT_FAIL---") {
-                vm.addLog("Installation failed at bootloader step.", isError: true)
-                vm.stage = .error
-            }
-        }
+        pollBuffers[vm.id] = buffer
     }
     
     private func startTerminalConsoleIfNeeded(for vm: VirtualMachine, writePipe: Pipe) {
@@ -424,6 +413,241 @@ class VMManager {
             }
         }
     }
+    
+    private func updateDetectedIPAddress(for vm: VirtualMachine) {
+        if vm.networkMode == .bridge, vm.bridgeInterfaceName == nil { return }
+        guard let mac = storedMACAddress(for: vm) else { return }
+        guard let ip = detectIPv4Address(forMAC: mac) else { return }
+        if ip == vm.ipAddress { return }
+        
+        vm.ipAddress = ip
+        if vm.networkMode == .nat, ip.hasPrefix("192.168.64.") {
+            vm.gateway = "192.168.64.1"
+        }
+        vm.isConnected = true
+        ensureWireGuardForwarders(for: vm)
+    }
+    
+    private func storedMACAddress(for vm: VirtualMachine) -> String? {
+        guard let vmDir = try? VMStorageManager.shared.ensureVMDirectoryExists(for: vm.id) else { return nil }
+        let macURL = vmDir.appendingPathComponent("mac-address.txt")
+        guard let mac = try? String(contentsOf: macURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !mac.isEmpty else { return nil }
+        return canonicalMAC(mac)
+    }
+    
+    private func canonicalMAC(_ mac: String) -> String {
+        let normalized = mac.lowercased().replacingOccurrences(of: "-", with: ":")
+        let parts = normalized.split(separator: ":").map { String($0) }
+        guard parts.count == 6 else { return normalized }
+        let padded = parts.map { part in
+            let hex = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if hex.count == 1 { return "0\(hex)" }
+            if hex.count == 0 { return "00" }
+            if hex.count == 2 { return hex }
+            return String(hex.suffix(2))
+        }
+        return padded.joined(separator: ":")
+    }
+    
+    private func detectIPv4Address(forMAC mac: String) -> String? {
+        if let arp = detectFromARPTable(forMAC: mac) {
+            return arp
+        }
+        if let lease = detectFromDHCPLeases(forMAC: mac) {
+            return lease
+        }
+        return nil
+    }
+    
+    private func detectFromDHCPLeases(forMAC mac: String) -> String? {
+        let paths = ["/var/db/dhcpd_leases", "/private/var/db/dhcpd_leases"]
+        for path in paths {
+            if let data = FileManager.default.contents(atPath: path),
+               let text = String(data: data, encoding: .utf8) {
+                if let ip = bestDHCPLeaseIPv4(forMAC: mac, in: text) {
+                    return ip
+                }
+            }
+        }
+        return nil
+    }
+    
+    private struct DHCPLeaseRecord {
+        let ip: String
+        let mac: String
+        let starts: Date?
+        let ends: Date?
+        let bindingState: String?
+    }
+    
+    private func bestDHCPLeaseIPv4(forMAC mac: String, in text: String) -> String? {
+        let normalizedMAC = canonicalMAC(mac)
+        let leases = parseDHCPLeaseRecords(text)
+            .filter { canonicalMAC($0.mac) == normalizedMAC }
+        
+        if leases.isEmpty { return nil }
+        
+        let now = Date()
+        let active = leases.filter { rec in
+            if let state = rec.bindingState?.lowercased(), state != "active" { return false }
+            if let ends = rec.ends, ends < now { return false }
+            return true
+        }
+        
+        let preferred = active.isEmpty ? leases : active
+        
+        let sorted = preferred.sorted { a, b in
+            let aStarts = a.starts ?? .distantPast
+            let bStarts = b.starts ?? .distantPast
+            if aStarts != bStarts { return aStarts > bStarts }
+            let aEnds = a.ends ?? .distantPast
+            let bEnds = b.ends ?? .distantPast
+            if aEnds != bEnds { return aEnds > bEnds }
+            return a.ip > b.ip
+        }
+        return sorted.first?.ip
+    }
+    
+    private func parseDHCPLeaseRecords(_ text: String) -> [DHCPLeaseRecord] {
+        var records: [DHCPLeaseRecord] = []
+        
+        var currentIP: String?
+        var currentMAC: String?
+        var currentStarts: Date?
+        var currentEnds: Date?
+        var currentState: String?
+        var currentIPFromKV: String?
+        var currentMACFromKV: String?
+        
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone.current
+        df.dateFormat = "yyyy/MM/dd HH:mm:ss"
+        
+        func flush() {
+            let ip = currentIP ?? currentIPFromKV
+            let mac = currentMAC ?? currentMACFromKV
+            if let ip, !ip.isEmpty, let mac, !mac.isEmpty {
+                records.append(DHCPLeaseRecord(ip: ip, mac: mac, starts: currentStarts, ends: currentEnds, bindingState: currentState))
+            }
+            currentIP = nil
+            currentMAC = nil
+            currentStarts = nil
+            currentEnds = nil
+            currentState = nil
+            currentIPFromKV = nil
+            currentMACFromKV = nil
+        }
+        
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if trimmed.hasPrefix("lease "), trimmed.contains("{") {
+                flush()
+                let parts = trimmed.components(separatedBy: .whitespaces)
+                if parts.count >= 2 {
+                    currentIP = parts[1]
+                }
+                continue
+            }
+            
+            if trimmed.hasPrefix("ip_address=") {
+                currentIPFromKV = trimmed
+                    .replacingOccurrences(of: "ip_address=", with: "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: ";"))
+                continue
+            }
+            
+            if trimmed.contains("hardware ethernet") {
+                if let r = trimmed.range(of: "hardware ethernet") {
+                    let rest = trimmed[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                    let macRaw = rest.components(separatedBy: CharacterSet(charactersIn: "; ")).first ?? ""
+                    currentMAC = canonicalMAC(macRaw)
+                }
+                continue
+            }
+            
+            if trimmed.hasPrefix("hw_address=") {
+                let val = trimmed
+                    .replacingOccurrences(of: "hw_address=", with: "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: ";"))
+                let components = val.components(separatedBy: ",")
+                let macRaw = components.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                currentMACFromKV = canonicalMAC(macRaw)
+                continue
+            }
+            
+            if trimmed.hasPrefix("starts ") || trimmed.hasPrefix("ends ") {
+                let parts = trimmed.components(separatedBy: .whitespaces)
+                if parts.count >= 4 {
+                    let dateString = "\(parts[2]) \(parts[3].trimmingCharacters(in: CharacterSet(charactersIn: ";")))"
+                    let parsed = df.date(from: dateString)
+                    if trimmed.hasPrefix("starts ") {
+                        currentStarts = parsed
+                    } else {
+                        currentEnds = parsed
+                    }
+                }
+                continue
+            }
+            
+            if trimmed.hasPrefix("binding state") {
+                let parts = trimmed.components(separatedBy: .whitespaces)
+                if parts.count >= 3 {
+                    currentState = parts[2].trimmingCharacters(in: CharacterSet(charactersIn: ";"))
+                }
+                continue
+            }
+            
+            if trimmed == "}" {
+                flush()
+                continue
+            }
+        }
+        
+        flush()
+        return records
+    }
+    
+    private func detectFromARPTable(forMAC mac: String) -> String? {
+        guard let output = runTool("/usr/sbin/arp", ["-an"]) else { return nil }
+        let needleMAC = canonicalMAC(mac)
+        let lines = output.split(separator: "\n").map { String($0) }
+        for line in lines {
+            let lower = line.lowercased()
+            guard let atRange = lower.range(of: " at ") else { continue }
+            let afterAt = lower[atRange.upperBound...]
+            let macToken = afterAt.split(separator: " ").first.map(String.init) ?? ""
+            if canonicalMAC(macToken) != needleMAC { continue }
+            if let open = line.firstIndex(of: "("), let close = line.firstIndex(of: ")"), open < close {
+                let ip = String(line[line.index(after: open)..<close])
+                if !ip.isEmpty {
+                    return ip
+                }
+            }
+        }
+        return nil
+    }
+    
+    private func runTool(_ executablePath: String, _ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
 
     private func ensureWireGuardForwarders(for vm: VirtualMachine) {
         guard vm.networkMode == .nat else { return }
@@ -459,13 +683,6 @@ class VMManager {
             } catch {
                 vm.addLog("Failed to start WG data UDP forwarder: \(error.localizedDescription)", isError: true)
             }
-        }
-    }
-
-    private func processInstallerDiagnostics(_ diagBlock: String, for vm: VirtualMachine) {
-        vm.addLog("Installer Diagnostics received.")
-        if diagBlock.contains("could not resolve") {
-            vm.addLog("ROOT CAUSE: DNS Failure.", isError: true)
         }
     }
 
@@ -550,195 +767,40 @@ class VMManager {
     private func streamCopy(from source: URL, to destination: URL) throws {
         let didStartAccess = source.startAccessingSecurityScopedResource()
         defer { if didStartAccess { source.stopAccessingSecurityScopedResource() } }
-        
-        let data = try Data(contentsOf: source)
-        try data.write(to: destination, options: .atomic)
-    }
-
-    private func extractKernelAndInitrd(from isoURL: URL, to tempDir: URL, vm: VirtualMachine) async throws -> (kernelURL: URL, initrdURL: URL) {
-        let kernelURL = tempDir.appendingPathComponent("vmlinuz")
-        let initrdURL = tempDir.appendingPathComponent("initrd.gz")
-        
-        if FileManager.default.fileExists(atPath: kernelURL.path) && FileManager.default.fileExists(atPath: initrdURL.path) {
-            return (kernelURL, initrdURL)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
         }
-
-        vm.addLog("Extracting installer contents...")
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
         
-        // Mount the ISO to extract files
-        let mountPoint = tempDir.appendingPathComponent("iso-mount")
-        try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
-        
-        // Mount ISO using hdiutil
-        let mountResult = try runProcess(executable: "/usr/bin/hdiutil", arguments: ["attach", isoURL.path, "-mountpoint", mountPoint.path, "-nobrowse", "-readonly"])
-        if mountResult.exitCode != 0 {
-            throw VMError.configurationInvalid("Failed to mount ISO: \(mountResult.stderr)")
-        }
-        
+        let readHandle = try FileHandle(forReadingFrom: source)
+        let writeHandle = try FileHandle(forWritingTo: destination)
         defer {
-            // Unmount ISO when done
-            let unmountResult = try? runProcess(executable: "/usr/bin/hdiutil", arguments: ["detach", mountPoint.path, "-force"])
-            if unmountResult == nil || unmountResult?.exitCode != 0 {
-                vm.addLog("Warning: Failed to unmount ISO at \(mountPoint.path)")
+            try? readHandle.close()
+            try? writeHandle.close()
+        }
+        
+        let chunkSize = 4 * 1024 * 1024
+        while true {
+            let data = try autoreleasepool {
+                try readHandle.read(upToCount: chunkSize) ?? Data()
             }
+            if data.isEmpty { break }
+            try writeHandle.write(contentsOf: data)
         }
-        
-        let kernelPaths = vm.selectedDistro == .debian13 ? ["install.a64/vmlinuz", "install/vmlinuz"] : ["boot/vmlinuz-virt"]
-        let initrdPaths = vm.selectedDistro == .debian13 ? ["install.a64/initrd.gz", "install/initrd.gz"] : ["boot/initramfs-virt"]
-        
-        var foundKernel = false
-        for path in kernelPaths {
-            let sourceURL = mountPoint.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: sourceURL.path) {
-                try? FileManager.default.removeItem(at: kernelURL)
-                try FileManager.default.copyItem(at: sourceURL, to: kernelURL)
-                foundKernel = true
-                vm.addLog("Found kernel at \(path)")
-                break
-            }
-        }
-        
-        var foundInitrd = false
-        for path in initrdPaths {
-            let sourceURL = mountPoint.appendingPathComponent(path)
-            if FileManager.default.fileExists(atPath: sourceURL.path) {
-                try? FileManager.default.removeItem(at: initrdURL)
-                try FileManager.default.copyItem(at: sourceURL, to: initrdURL)
-                foundInitrd = true
-                vm.addLog("Found initrd at \(path)")
-                break
-            }
-        }
-        
-        if foundKernel && foundInitrd {
-            return (kernelURL, initrdURL)
-        }
-        
-        var kernelCandidate: URL?
-        var initrdCandidate: URL?
-        if let enumerator = FileManager.default.enumerator(at: mountPoint, includingPropertiesForKeys: nil) {
-            for case let url as URL in enumerator {
-                let name = url.lastPathComponent.lowercased()
-                if kernelCandidate == nil && name.contains("vmlinuz") {
-                    kernelCandidate = url
-                } else if initrdCandidate == nil && (name.contains("initrd") || name.contains("initramfs")) {
-                    initrdCandidate = url
-                }
-                if kernelCandidate != nil && initrdCandidate != nil { break }
-            }
-        }
-        if let k = kernelCandidate {
-            try? FileManager.default.removeItem(at: kernelURL)
-            try? FileManager.default.copyItem(at: k, to: kernelURL)
-            foundKernel = true
-            vm.addLog("Found kernel at \(k.path)")
-        }
-        if let i = initrdCandidate {
-            try? FileManager.default.removeItem(at: initrdURL)
-            try? FileManager.default.copyItem(at: i, to: initrdURL)
-            foundInitrd = true
-            vm.addLog("Found initrd at \(i.path)")
-        }
-        if foundKernel && foundInitrd {
-            return (kernelURL, initrdURL)
-        }
-        
-        throw VMError.configurationInvalid("Failed to extract installer resources. Kernel found: \(foundKernel), Initrd found: \(foundInitrd)")
-    }
-
-    private func injectPreseed(into initrdURL: URL, isMaster: Bool, vm: VirtualMachine) throws {
-        let token = clusterToken
-        let masterIP = virtualMachines.first(where: { $0.isMaster })?.ipAddress ?? "192.168.64.2"
-        let k3sCommand = isMaster ? 
-            "curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644 --cluster-init --token \(token) --disable traefik" :
-            "curl -sfL https://get.k3s.io | K3S_URL=https://\(masterIP):6443 K3S_TOKEN=\(token) sh -"
-
-        let preseed = """
-        d-i debian-installer/locale string en_US
-        d-i keyboard-configuration/xkb-keymap select us
-        d-i netcfg/choose_interface select auto
-        d-i netcfg/link_wait_timeout string 60
-        d-i netcfg/dhcp_timeout string 60
-        d-i netcfg/dhcpv6_timeout string 1
-        d-i netcfg/get_nameservers string 8.8.8.8 1.1.1.1
-        d-i netcfg/get_domain string local
-        d-i netcfg/get_hostname string \(isMaster ? "mlv-master" : "mlv-node")
-        d-i mirror/country string manual
-        d-i mirror/http/hostname string deb.debian.org
-        d-i mirror/http/directory string /debian
-        d-i mirror/http/proxy string
-        d-i mirror/suite string trixie
-        d-i mirror/udeb/suite string trixie
-        d-i apt-setup/use_mirror boolean true
-        d-i apt-setup/cdrom/set-first boolean false
-        d-i apt-setup/services-select multiselect security, updates
-        d-i apt-setup/security_host string security.debian.org
-        d-i apt-setup/security_path string /debian-security
-        d-i apt-setup/non-free-firmware boolean true
-        d-i apt-setup/contrib boolean true
-        d-i apt-setup/non-free boolean true
-        d-i passwd/user-fullname string MLV Admin
-        d-i passwd/username string mlv
-        d-i passwd/user-password password mlv
-        d-i passwd/user-password-again password mlv
-        d-i partman-auto/disk string /dev/vda
-        d-i partman-auto/method string regular
-        d-i partman/confirm_write_new_label boolean true
-        d-i partman/choose_partition select finish
-        d-i partman/confirm boolean true
-        d-i partman/confirm_nooverwrite boolean true
-        d-i pkgsel/include string sudo grub-efi-arm64
-        d-i preseed/late_command string in-target bash -c "cat > /etc/apt/sources.list <<'EOF'\ndeb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\nEOF"; in-target bash -c "systemctl enable serial-getty@hvc0.service || true"; in-target bash -c "systemctl start serial-getty@hvc0.service || true"; in-target bash -c "\(k3sCommand)"; echo "---MLV_INSTALL_DONE---" > /dev/hvc0
-        d-i finish-install/reboot_in_progress note
-        d-i debian-installer/exit/poweroff boolean true
-        """
-        
-        let tempDir = initrdURL.deletingLastPathComponent()
-        let preseedFile = tempDir.appendingPathComponent("preseed.cfg")
-        try preseed.write(to: preseedFile, atomically: true, encoding: .utf8)
-        
-        let shellCmd = "cd \"\(tempDir.path)\" && echo preseed.cfg | cpio -o -H newc > preseed.cpio && cat \"\(initrdURL.path)\" preseed.cpio > initrd_combined.gz"
-        _ = try runProcess(executable: "/bin/sh", arguments: ["-c", shellCmd])
-        
-        try? FileManager.default.removeItem(at: initrdURL)
-        try FileManager.default.moveItem(at: tempDir.appendingPathComponent("initrd_combined.gz"), to: initrdURL)
-    }
-
-    private func createUbuntuNoCloudSeedISO(in vmTempDir: URL, vm: VirtualMachine, masterIP: String) throws -> URL {
-        let seedDir = vmTempDir.appendingPathComponent("nocloud-seed")
-        try? FileManager.default.createDirectory(at: seedDir, withIntermediateDirectories: true)
-        
-        let userData = "#cloud-config\nautoinstall:\n  version: 1\n  identity:\n    hostname: \(vm.name)\n    username: mlv\n    password: \"$1$WDmB6AfA$d7Ef1wCrtPJdipFSttNJC.\"\nruncmd:\n  - [ bash, -c, \"systemctl enable serial-getty@hvc0.service || true\" ]\n  - [ bash, -c, \"systemctl start serial-getty@hvc0.service || true\" ]"
-        try userData.write(to: seedDir.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
-        try "instance-id: \(vm.id.uuidString)".write(to: seedDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
-        
-        let seedISOURL = vmTempDir.appendingPathComponent("cidata.iso")
-        _ = try runProcess(executable: "/usr/bin/hdiutil", arguments: ["makehybrid", "-iso", "-joliet", "-o", seedISOURL.path, seedDir.path])
-        return seedISOURL
-    }
-
-    private func runProcess(executable: String, arguments: [String]) throws -> ProcessResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        let stdoutPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        try process.run()
-        process.waitUntilExit()
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        return ProcessResult(exitCode: process.terminationStatus, stdout: String(decoding: data, as: UTF8.self), stderr: "")
-    }
-
-    private struct ProcessResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
     }
     
     func stopVM(_ vm: VirtualMachine) async throws {
         vm.userInitiatedStop = true
         try await vm.vzVirtualMachine?.stop()
         vm.state = .stopped
+        serialReadPipes[vm.id]?.fileHandleForReading.readabilityHandler = nil
+        try? serialReadPipes[vm.id]?.fileHandleForReading.close()
+        try? vm.serialWritePipe?.fileHandleForWriting.close()
+        serialReadPipes[vm.id] = nil
+        pollBuffers[vm.id] = nil
+        vm.serialWritePipe = nil
+        vm.vzVirtualMachine = nil
+        vm.vzDelegate = nil
         wgControlForwarders[vm.id]?.stop()
         wgControlForwarders[vm.id] = nil
         wgDataForwarders[vm.id]?.stop()

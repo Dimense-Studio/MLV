@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import AppKit
 
 @Observable
 final class WireGuardManager {
@@ -9,7 +10,11 @@ final class WireGuardManager {
         let publicKey: String
         let endpointHost: String
         let endpointPort: Int
-        let vmSubnet: String
+        let addressCIDR: String
+        let advertisedRoutes: [String]
+        let cpuCount: Int
+        let memoryGB: Int
+        let freeDiskGB: Int
 
         func jsonData() -> Data {
             (try? JSONEncoder().encode(self)) ?? Data()
@@ -26,14 +31,18 @@ final class WireGuardManager {
         let publicKey: String
         let endpointHost: String
         let endpointPort: Int
-        let vmSubnet: String
+        let addressCIDR: String
+        let allowedIPs: [String]
     }
 
     static let shared = WireGuardManager()
 
+    private let keyNodeID = "MLV_Node_ID"
     private let keyPrivateKey = "MLV_WG_PrivateKey"
     private let keyPeers = "MLV_WG_Peers"
     private let keyListenPort = "MLV_WG_ListenPort"
+    private let keyInterfaceAddress = "MLV_WG_InterfaceAddressCIDR"
+    private let keyLastConfigPath = "MLV_WG_LastConfigPath"
 
     var peers: [Peer] = []
 
@@ -41,14 +50,33 @@ final class WireGuardManager {
         loadPeers()
     }
 
+    private var nodeID: String {
+        if let existing = UserDefaults.standard.string(forKey: keyNodeID), !existing.isEmpty {
+            return existing
+        }
+        let created = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(created, forKey: keyNodeID)
+        return created
+    }
+
     var hostInfo: HostInfo {
-        let id = Host.current().localizedName ?? "MLV Host"
+        let id = nodeID
         let name = Host.current().localizedName ?? "MLV"
         let pub = publicKeyBase64
-        let epHost = HostResources.getNetworkInterfaces().compactMap { HostResources.ipAddress(for: $0.bsdName) }.first ?? "0.0.0.0"
+        let epHost = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? "0.0.0.0"
         let epPort = listenPort
-        let subnet = "192.168.64.0/24"
-        return HostInfo(id: id, name: name, publicKey: pub, endpointHost: epHost, endpointPort: epPort, vmSubnet: subnet)
+        return HostInfo(
+            id: id,
+            name: name,
+            publicKey: pub,
+            endpointHost: epHost,
+            endpointPort: epPort,
+            addressCIDR: interfaceAddressCIDR,
+            advertisedRoutes: [],
+            cpuCount: HostResources.cpuCount,
+            memoryGB: HostResources.totalMemoryGB,
+            freeDiskGB: HostResources.freeDiskSpaceGB
+        )
     }
 
     var publicKeyShort: String {
@@ -73,30 +101,51 @@ final class WireGuardManager {
     }
 
     func startDiscovery() {
-        DiscoveryManager.shared.start(myInfo: hostInfo)
+        let token = VMManager.shared.clusterToken
+        DiscoveryManager.shared.start(myInfo: hostInfo, clusterToken: token)
     }
 
     func pair(discovered: DiscoveryManager.DiscoveredHost) {
         DiscoveryManager.shared.requestPeerInfo(discovered) { info in
             guard let info else { return }
             DispatchQueue.main.async {
-                if self.peers.contains(where: { $0.publicKey == info.publicKey }) { return }
-                self.peers.append(Peer(id: info.id, name: info.name, publicKey: info.publicKey, endpointHost: info.endpointHost, endpointPort: info.endpointPort, vmSubnet: info.vmSubnet))
-                self.persistPeers()
+                self.addOrUpdatePeer(from: info)
+                DiscoveryManager.shared.removeDiscovered(id: discovered.id)
             }
         }
+    }
+    
+    func addOrUpdatePeer(from info: HostInfo) {
+        let allowed = Array(Set(info.advertisedRoutes + [info.addressCIDR])).sorted()
+        let updated = Peer(
+            id: info.id,
+            name: info.name,
+            publicKey: info.publicKey,
+            endpointHost: info.endpointHost,
+            endpointPort: info.endpointPort,
+            addressCIDR: info.addressCIDR,
+            allowedIPs: allowed
+        )
+        
+        if let idx = peers.firstIndex(where: { $0.id == info.id || $0.publicKey == info.publicKey }) {
+            peers[idx] = updated
+        } else {
+            peers.append(updated)
+        }
+        persistPeers()
     }
 
     func exportConfig() -> String {
         var lines: [String] = []
         lines.append("[Interface]")
         lines.append("PrivateKey = \(privateKeyBase64)")
+        lines.append("Address = \(interfaceAddressCIDR)")
         lines.append("ListenPort = \(listenPort)")
         lines.append("")
         for peer in peers {
             lines.append("[Peer]")
             lines.append("PublicKey = \(peer.publicKey)")
-            lines.append("AllowedIPs = \(peer.vmSubnet)")
+            lines.append("AllowedIPs = \(peer.allowedIPs.joined(separator: ", "))")
             if !peer.endpointHost.isEmpty, peer.endpointPort != 0 {
                 lines.append("Endpoint = \(peer.endpointHost):\(peer.endpointPort)")
             }
@@ -104,6 +153,41 @@ final class WireGuardManager {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+    
+    func writeConfigToDisk() -> URL? {
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = appSupport.appendingPathComponent("MLV", isDirectory: true).appendingPathComponent("WireGuard", isDirectory: true)
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        
+        let fileURL = dir.appendingPathComponent("MLV.conf")
+        do {
+            try exportConfig().write(to: fileURL, atomically: true, encoding: .utf8)
+            UserDefaults.standard.set(fileURL.path, forKey: keyLastConfigPath)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+    
+    func copyConfigToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(exportConfig(), forType: .string)
+    }
+    
+    func openConfigInWireGuard() {
+        guard let url = writeConfigToDisk() else { return }
+        NSWorkspace.shared.open(url)
+    }
+    
+    func revealConfigInFinder() {
+        guard let url = writeConfigToDisk() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private var privateKeyBase64: String {
@@ -118,6 +202,36 @@ final class WireGuardManager {
         let key = Curve25519.KeyAgreement.PrivateKey()
         UserDefaults.standard.set(key.rawRepresentation, forKey: keyPrivateKey)
         return key
+    }
+    
+    func deriveClusterSymmetricKey(peerPublicKeyBase64: String) -> SymmetricKey? {
+        guard let peerData = Data(base64Encoded: peerPublicKeyBase64),
+              let peer = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerData),
+              let shared = try? privateKey.sharedSecretFromKeyAgreement(with: peer) else {
+            return nil
+        }
+        let salt = Data(VMManager.shared.clusterToken.utf8)
+        let info = Data("MLV_CLUSTER_RPC".utf8)
+        return shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt, sharedInfo: info, outputByteCount: 32)
+    }
+    
+    private var interfaceAddressCIDR: String {
+        get {
+            if let stored = UserDefaults.standard.string(forKey: keyInterfaceAddress), !stored.isEmpty {
+                return stored
+            }
+            let rawPub = Data(base64Encoded: publicKeyBase64) ?? Data(publicKeyBase64.utf8)
+            let hash = SHA256.hash(data: rawPub)
+            var it = hash.makeIterator()
+            let firstByte = it.next() ?? 1
+            let octet = Int(firstByte) % 253 + 2
+            let addr = "10.13.10.\(octet)/32"
+            UserDefaults.standard.set(addr, forKey: keyInterfaceAddress)
+            return addr
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: keyInterfaceAddress)
+        }
     }
 
     private func loadPeers() {

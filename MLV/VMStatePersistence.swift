@@ -7,6 +7,8 @@ struct VMMetadata: Codable {
     let memorySizeGB: Int
     let systemDiskSizeGB: Int
     let dataDiskSizeGB: Int
+    let systemDiskProfile: String?
+    let dataDiskProfile: String?
     let selectedDistro: String
     let isMaster: Bool
     let stage: String
@@ -34,6 +36,8 @@ struct VMMetadata: Codable {
         memorySizeGB: Int,
         systemDiskSizeGB: Int,
         dataDiskSizeGB: Int,
+        systemDiskProfile: String?,
+        dataDiskProfile: String?,
         selectedDistro: String,
         isMaster: Bool,
         stage: String,
@@ -60,6 +64,8 @@ struct VMMetadata: Codable {
         self.memorySizeGB = memorySizeGB
         self.systemDiskSizeGB = systemDiskSizeGB
         self.dataDiskSizeGB = dataDiskSizeGB
+        self.systemDiskProfile = systemDiskProfile
+        self.dataDiskProfile = dataDiskProfile
         self.selectedDistro = selectedDistro
         self.isMaster = isMaster
         self.stage = stage
@@ -92,44 +98,53 @@ class VMStatePersistence {
         return containerDir.appendingPathComponent(vmsMetadataFile)
     }
     
+    private var saveWorkItem: DispatchWorkItem?
+    private let saveQueue = DispatchQueue(label: "mlv.persistence.save", qos: .utility)
+    
     func saveVMs(_ vms: [VirtualMachine]) {
-        let metadata = vms.map { vm in
-            VMMetadata(
-                id: vm.id,
-                name: vm.name,
-                cpuCount: vm.cpuCount,
-                memorySizeGB: vm.memorySizeGB,
-                systemDiskSizeGB: vm.systemDiskSizeGB,
-                dataDiskSizeGB: vm.dataDiskSizeGB,
-                selectedDistro: vm.selectedDistro.rawValue,
-                isMaster: vm.isMaster,
-                stage: vm.stage.rawValue,
-                isInstalled: vm.isInstalled,
-                networkMode: vm.networkMode.rawValue,
-                bridgeInterfaceName: vm.bridgeInterfaceName,
-                clusterRole: vm.clusterRole.rawValue,
-                wgControlPrivateKeyBase64: vm.wgControlPrivateKeyBase64,
-                wgControlPublicKeyBase64: vm.wgControlPublicKeyBase64,
-                wgControlAddressCIDR: vm.wgControlAddressCIDR,
-                wgControlListenPort: vm.wgControlListenPort,
-                wgControlHostForwardPort: vm.wgControlHostForwardPort,
-                wgDataPrivateKeyBase64: vm.wgDataPrivateKeyBase64,
-                wgDataPublicKeyBase64: vm.wgDataPublicKeyBase64,
-                wgDataAddressCIDR: vm.wgDataAddressCIDR,
-                wgDataListenPort: vm.wgDataListenPort,
-                wgDataHostForwardPort: vm.wgDataHostForwardPort,
-                autoStartOnLaunch: vm.autoStartOnLaunch,
-                terminalConsoleHostPort: vm.terminalConsoleHostPort
-            )
+        saveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [vms] in
+            let metadata = vms.map { vm in
+                VMMetadata(
+                    id: vm.id,
+                    name: vm.name,
+                    cpuCount: vm.cpuCount,
+                    memorySizeGB: vm.memorySizeGB,
+                    systemDiskSizeGB: vm.systemDiskSizeGB,
+                    dataDiskSizeGB: vm.dataDiskSizeGB,
+                    systemDiskProfile: vm.systemDiskProfile.rawValue,
+                    dataDiskProfile: vm.dataDiskProfile.rawValue,
+                    selectedDistro: vm.selectedDistro.rawValue,
+                    isMaster: vm.isMaster,
+                    stage: vm.stage.rawValue,
+                    isInstalled: vm.isInstalled,
+                    networkMode: vm.networkMode.rawValue,
+                    bridgeInterfaceName: vm.bridgeInterfaceName,
+                    clusterRole: vm.clusterRole.rawValue,
+                    wgControlPrivateKeyBase64: vm.wgControlPrivateKeyBase64,
+                    wgControlPublicKeyBase64: vm.wgControlPublicKeyBase64,
+                    wgControlAddressCIDR: vm.wgControlAddressCIDR,
+                    wgControlListenPort: vm.wgControlListenPort,
+                    wgControlHostForwardPort: vm.wgControlHostForwardPort,
+                    wgDataPrivateKeyBase64: vm.wgDataPrivateKeyBase64,
+                    wgDataPublicKeyBase64: vm.wgDataPublicKeyBase64,
+                    wgDataAddressCIDR: vm.wgDataAddressCIDR,
+                    wgDataListenPort: vm.wgDataListenPort,
+                    wgDataHostForwardPort: vm.wgDataHostForwardPort,
+                    autoStartOnLaunch: vm.autoStartOnLaunch,
+                    terminalConsoleHostPort: vm.terminalConsoleHostPort
+                )
+            }
+            do {
+                let data = try JSONEncoder().encode(metadata)
+                try data.write(to: self.metadataURL, options: .atomic)
+                print("[VMPersistence] Saved \(metadata.count) VMs to disk.")
+            } catch {
+                print("[VMPersistence] Error saving metadata: \(error.localizedDescription)")
+            }
         }
-        
-        do {
-            let data = try JSONEncoder().encode(metadata)
-            try data.write(to: metadataURL, options: .atomic)
-            print("[VMPersistence] Saved \(metadata.count) VMs to disk.")
-        } catch {
-            print("[VMPersistence] Error saving metadata: \(error.localizedDescription)")
-        }
+        saveWorkItem = workItem
+        saveQueue.asyncAfter(deadline: .now() + 0.5, execute: workItem)
     }
     
     func loadVMs() -> [VMMetadata] {

@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LoginItemManager.shared.setEnabled(AppSettingsStore.shared.launchAtLogin)
             VMManager.shared.refreshBackgroundExecution()
             VMManager.shared.autoStartVMsIfNeeded()
+            ClusterManager.shared.start()
         }
     }
 

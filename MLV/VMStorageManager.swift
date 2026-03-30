@@ -1,5 +1,6 @@
 import Foundation
 import Virtualization
+import Darwin
 
 class VMStorageManager {
     static let shared = VMStorageManager()
@@ -19,21 +20,58 @@ class VMStorageManager {
         return dir
     }
     
-    func createSparseDisk(at url: URL, sizeGiB: Int) throws {
+    func createSparseDisk(at url: URL, sizeGiB: Int, preallocate: Bool = false) throws {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
-            let fileHandle = try FileHandle(forWritingTo: url)
-            try fileHandle.truncate(atOffset: UInt64(sizeGiB) * 1024 * 1024 * 1024)
-            try fileHandle.close()
         }
+        
+        let fd = open(url.path, O_RDWR)
+        if fd == -1 {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        defer { close(fd) }
+        
+        let targetSize = off_t(UInt64(sizeGiB) * 1024 * 1024 * 1024)
+        let currentSize = lseek(fd, 0, SEEK_END)
+        if currentSize < 0 {
+            throw CocoaError(.fileReadUnknown)
+        }
+        
+        if currentSize != targetSize {
+            if ftruncate(fd, targetSize) != 0 {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            
+            if preallocate, targetSize > 0, currentSize < targetSize {
+                var store = fstore_t(
+                    fst_flags: UInt32(F_ALLOCATECONTIG),
+                    fst_posmode: Int32(F_PEOFPOSMODE),
+                    fst_offset: 0,
+                    fst_length: targetSize,
+                    fst_bytesalloc: 0
+                )
+                if fcntl(fd, F_PREALLOCATE, &store) == -1 {
+                    store.fst_flags = UInt32(F_ALLOCATEALL)
+                    _ = fcntl(fd, F_PREALLOCATE, &store)
+                }
+            }
+        }
+        
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableURL = url
+        try? mutableURL.setResourceValues(values)
     }
     
     func getISOCacheDirectory() throws -> URL {
         let containerDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-        let cacheDir = containerDir.appendingPathComponent(isoCacheName, isDirectory: true)
+        var cacheDir = containerDir.appendingPathComponent(isoCacheName, isDirectory: true)
         if !FileManager.default.fileExists(atPath: cacheDir.path) {
             try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? cacheDir.setResourceValues(values)
         return cacheDir
     }
     

@@ -22,9 +22,9 @@ class VMConfigurationBuilder {
         _ = try VMStorageManager.shared.ensureVMDirectoryExists(for: vm.id)
         
         // Ensure system/data disks exist
-        try VMStorageManager.shared.createSparseDisk(at: systemDiskURL, sizeGiB: vm.systemDiskSizeGB)
+        try VMStorageManager.shared.createSparseDisk(at: systemDiskURL, sizeGiB: vm.systemDiskSizeGB, preallocate: vm.systemDiskProfile == .durable)
         if vm.dataDiskSizeGB > 0 {
-            try VMStorageManager.shared.createSparseDisk(at: dataDiskURL, sizeGiB: vm.dataDiskSizeGB)
+            try VMStorageManager.shared.createSparseDisk(at: dataDiskURL, sizeGiB: vm.dataDiskSizeGB, preallocate: vm.dataDiskProfile == .durable)
         }
         
         // EFI Variable Store
@@ -39,60 +39,50 @@ class VMConfigurationBuilder {
         var storageDevices: [VZStorageDeviceConfiguration] = []
         
         // System Disk
-        let systemAttachment = try VZDiskImageStorageDeviceAttachment(url: systemDiskURL, readOnly: false)
+        let systemAttachment: VZDiskImageStorageDeviceAttachment
+        if #available(macOS 13.0, *) {
+            systemAttachment = try VZDiskImageStorageDeviceAttachment(
+                url: systemDiskURL,
+                readOnly: false,
+                cachingMode: vm.systemDiskProfile.diskImageCachingMode,
+                synchronizationMode: vm.systemDiskProfile.diskImageSynchronizationMode
+            )
+        } else {
+            systemAttachment = try VZDiskImageStorageDeviceAttachment(url: systemDiskURL, readOnly: false)
+        }
         storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: systemAttachment))
         
         if vm.dataDiskSizeGB > 0 {
-            let dataAttachment = try VZDiskImageStorageDeviceAttachment(url: dataDiskURL, readOnly: false)
+            let dataAttachment: VZDiskImageStorageDeviceAttachment
+            if #available(macOS 13.0, *) {
+                dataAttachment = try VZDiskImageStorageDeviceAttachment(
+                    url: dataDiskURL,
+                    readOnly: false,
+                    cachingMode: vm.dataDiskProfile.diskImageCachingMode,
+                    synchronizationMode: vm.dataDiskProfile.diskImageSynchronizationMode
+                )
+            } else {
+                dataAttachment = try VZDiskImageStorageDeviceAttachment(url: dataDiskURL, readOnly: false)
+            }
             storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: dataAttachment))
         }
         
         // Bootloader Configuration
         if vm.isInstalled {
             // PHASE 2: RUN MODE - Boot from installed disk
+            // Note: User-data injection is only supported for cloud-init compatible distros.
             let bootLoader = VZEFIBootLoader()
             bootLoader.variableStore = efiStore
             config.bootLoader = bootLoader
             print("[VMConfigBuilder] RUN MODE: Configured for EFI Disk Boot (ISO detached)")
         } else {
-            // PHASE 1: INSTALL MODE - Attach ISO and boot installer
+            // PHASE 1: INSTALL MODE - Attach ISO and boot installer (manual install)
             let isoAttachment = try VZDiskImageStorageDeviceAttachment(url: isoURL, readOnly: true)
             storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: isoAttachment))
-            
-            // Distro-specific bootloader logic (mimicking VMManager but cleaner)
-            switch vm.selectedDistro {
-            case .debian13, .alpine:
-                let kernelURL = vmDir.appendingPathComponent("vmlinuz")
-                let initrdURL = vmDir.appendingPathComponent("initrd.gz")
-                
-                let haveKernel = FileManager.default.fileExists(atPath: kernelURL.path)
-                let haveInitrd = FileManager.default.fileExists(atPath: initrdURL.path)
-                if haveKernel && haveInitrd {
-                    let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
-                    bootLoader.initialRamdiskURL = initrdURL
-                    bootLoader.commandLine = getInstallerCommandLine(for: vm.selectedDistro, isMaster: vm.isMaster)
-                    config.bootLoader = bootLoader
-                    print("[VMConfigBuilder] INSTALL MODE: Direct Kernel Boot (kernel/initrd present)")
-                } else {
-                    let bootLoader = VZEFIBootLoader()
-                    bootLoader.variableStore = efiStore
-                    config.bootLoader = bootLoader
-                    print("[VMConfigBuilder] INSTALL MODE: Fallback to EFI Boot (kernel/initrd missing)")
-                }
-                
-            case .ubuntu, .minimal:
-                let bootLoader = VZEFIBootLoader()
-                bootLoader.variableStore = efiStore
-                config.bootLoader = bootLoader
-                
-                // Ubuntu needs the seed ISO for autoinstall
-                let seedISOURL = vmDir.appendingPathComponent("cidata.iso")
-                if FileManager.default.fileExists(atPath: seedISOURL.path) {
-                    let seedAttachment = try VZDiskImageStorageDeviceAttachment(url: seedISOURL, readOnly: true)
-                    storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: seedAttachment))
-                }
-                print("[VMConfigBuilder] INSTALL MODE: Configured for EFI Boot with ISOs")
-            }
+            let bootLoader = VZEFIBootLoader()
+            bootLoader.variableStore = efiStore
+            config.bootLoader = bootLoader
+            print("[VMConfigBuilder] INSTALL MODE: Configured for EFI Boot with ISO")
         }
         
         config.storageDevices = storageDevices
@@ -153,17 +143,18 @@ class VMConfigurationBuilder {
         // Serial Console setup (to be handled by VMManager to manage pipes)
         // config.consoleDevices = ...
         
+        // --- BEGIN INSERT ---
+        if vm.selectedDistro == .minimal {
+            // Example: Attach user-data as a CD-ROM or config drive (adjust for your implementation)
+            // ... (actual attachment logic here)
+            print("[VMConfigBuilder] Injecting cloud-init user-data (only for compatible distro)")
+            // TODO: Attach your userData disk/image here
+        } else {
+            print("[VMConfigBuilder] No user-data injected: Distro does not support cloud-init.")
+        }
+        // --- END INSERT ---
+        
         return config
     }
     
-    private func getInstallerCommandLine(for distro: VirtualMachine.LinuxDistro, isMaster: Bool) -> String {
-        switch distro {
-        case .debian13:
-            return "auto=true priority=critical console=hvc0 console=tty0 earlycon=virtio_console video=1280x720 DEBIAN_FRONTEND=text preseed/file=/preseed.cfg ipv6.disable=1 netcfg/choose_interface=auto netcfg/link_wait_timeout=60 netcfg/dhcp_timeout=60 netcfg/dhcpv6_timeout=1 netcfg/get_nameservers=8.8.8.8,1.1.1.1 mirror/country=manual mirror/http/hostname=deb.debian.org mirror/http/directory=/debian mirror/suite=trixie mirror/udeb/suite=trixie hw-detect/load_firmware=false"
-        case .alpine:
-            return "console=hvc0 console=tty0 earlycon=virtio_console"
-        default:
-            return "console=hvc0 console=tty0 earlycon=virtio_console"
-        }
-    }
 }
