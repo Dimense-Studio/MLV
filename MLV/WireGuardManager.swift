@@ -102,6 +102,13 @@ final class WireGuardManager {
 
     func startDiscovery() {
         let token = VMManager.shared.clusterToken
+        DiscoveryManager.shared.onUpdate = { hosts in
+            for host in hosts {
+                WireGuardManager.shared.pair(discovered: host)
+            }
+            let ids = Set(hosts.map { $0.id })
+            WireGuardManager.shared.removeStalePeers(currentIDs: ids)
+        }
         DiscoveryManager.shared.start(myInfo: hostInfo, clusterToken: token)
     }
 
