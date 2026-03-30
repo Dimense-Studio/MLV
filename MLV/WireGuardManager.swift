@@ -2,6 +2,9 @@ import Foundation
 import CryptoKit
 import AppKit
 
+/// Manages the WireGuard peer mesh which is now fully automatic.
+/// It selects the fastest available interface for endpoint hosting,
+/// preferring thunderbolt, then ethernet, then wifi.
 @Observable
 final class WireGuardManager {
     struct HostInfo: Codable, Hashable {
@@ -100,6 +103,8 @@ final class WireGuardManager {
         return Data(pub).base64EncodedString()
     }
 
+    /// Starts peer discovery and pairing process.
+    /// Pairing is now always automatic and requires no user action.
     func startDiscovery() {
         let token = VMManager.shared.clusterToken
         DiscoveryManager.shared.onUpdate = { hosts in

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		30D4DAB22F7578FA003C3565 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -22,10 +26,6 @@
 			remoteInfo = MLV;
 		};
 /* End PBXContainerItemProxy section */
-
-/* Begin PBXBuildFile section */
-		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
-/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		30D4DAA22F7578F9003C3565 /* MLV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLV.app; sourceTree = BUILT_PRODUCTS_DIR; };
