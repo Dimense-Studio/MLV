@@ -145,7 +145,7 @@ final class WireGuardManager {
             peers.append(updated)
         }
         persistPeers()
-        self.writeConfigToDisk()
+        _ = writeConfigToDisk()
     }
 
     /// Removes peers not in the provided set of IDs
@@ -154,7 +154,7 @@ final class WireGuardManager {
         peers.removeAll { !currentIDs.contains($0.id) }
         if peers.count != before {
             persistPeers()
-            writeConfigToDisk()
+            _ = writeConfigToDisk()
         }
     }
 
@@ -272,4 +272,3 @@ final class WireGuardManager {
         }
     }
 }
-

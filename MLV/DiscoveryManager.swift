@@ -293,7 +293,7 @@ final class DiscoveryManager {
             if done { return }
             connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, error in
                 if done { return }
-                if let error {
+                if error != nil {
                     done = true
                     connection.cancel()
                     return

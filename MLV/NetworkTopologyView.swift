@@ -8,6 +8,17 @@ struct NetworkTopologyView: View {
     
     @State private var hoveredNodeID: String? = nil
     
+    // Placeholder metrics; replace with real data from your manager when available
+    var nodeMetrics: [String: (latencyMS: Int, throughputMbps: Int)] {
+        var dict: [String: (Int, Int)] = [:]
+        for n in allNodes {
+            // simple deterministic placeholders based on id hash
+            let h = abs(n.id.hashValue)
+            dict[n.id] = (latencyMS: 20 + (h % 80), throughputMbps: 50 + (h % 450))
+        }
+        return dict
+    }
+    
     var myNode: WireGuardManager.HostInfo {
         wg.hostInfo
     }
@@ -34,18 +45,33 @@ struct NetworkTopologyView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // Connections (arcs between all nodes, undirected)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(.background)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(.separator, lineWidth: 1)
+                    )
+                    .padding(8)
+                
                 ForEach(connections) { conn in
                     let fromPoint = position(for: conn.a, in: geo.size)
                     let toPoint = position(for: conn.b, in: geo.size)
                     connectionLine(from: fromPoint,
                                    to: toPoint)
-                        .stroke(Color.accentColor.opacity(0.16), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [5, 8]))
+                        .stroke(.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round, dash: [3, 10]))
+                    
+                    let midPoint = CGPoint(x: (fromPoint.x + toPoint.x) / 2, y: (fromPoint.y + toPoint.y) / 2)
+                    if let peerID = allNodes[safe: conn.b]?.id, let m = nodeMetrics[peerID] {
+                        ConnectionBadge(text: "\(m.latencyMS) ms")
+                            .position(midPoint)
+                    }
                 }
-                // Nodes
                 ForEach(Array(allNodes.enumerated()), id: \.element.id) { index, node in
                     let pos = position(for: index, in: geo.size)
-                    NodeCircle(name: node.name, isSelf: node.selfNode, isHovered: hoveredNodeID == node.id)
+                    NodeCircle(name: node.name,
+                               isSelf: node.selfNode,
+                               isHovered: hoveredNodeID == node.id,
+                               metrics: nodeMetrics[node.id])
                         .position(pos)
                         .onHover { hovered in
                             hoveredNodeID = hovered ? node.id : nil
@@ -54,14 +80,14 @@ struct NetworkTopologyView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.windowBackgroundColor).opacity(0.001))
+            .background(.clear)
         }
     }
     
     // Each node is placed in a circle
     func position(for index: Int, in size: CGSize) -> CGPoint {
         let count = max(1, allNodes.count)
-        let radius = min(size.width, size.height) * 0.35
+        let radius = min(size.width, size.height) * 0.38
         let center = CGPoint(x: size.width/2, y: size.height/2)
         if count == 1 { return center }
         let angle = CGFloat(index) / CGFloat(count) * 2 * .pi - .pi/2
@@ -87,29 +113,53 @@ private struct NodeCircle: View {
     let name: String
     let isSelf: Bool
     let isHovered: Bool
+    let metrics: (latencyMS: Int, throughputMbps: Int)?
     
     var body: some View {
-        VStack(spacing: 4) {
-            Circle()
-                .fill(isSelf ? Color.accentColor : Color.primary.opacity(isHovered ? 0.14 : 0.08))
-                .frame(width: isHovered ? 64 : 54, height: isHovered ? 64 : 54)
-                .shadow(color: isSelf ? Color.accentColor.opacity(0.25) : .clear, radius: 8, y: 3)
-                .overlay(Circle().strokeBorder(isSelf ? Color.accentColor : Color.secondary.opacity(isHovered ? 0.5 : 0.2), lineWidth: isSelf ? 4 : 2))
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .fill(isSelf ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.08))
+                    .overlay(Circle().strokeBorder(isSelf ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: isSelf ? 2 : 1))
+                    .frame(width: isHovered ? 60 : 54, height: isHovered ? 60 : 54)
+            }
             Text(name)
-                .font(.system(size: isHovered ? 14 : 12, weight: isSelf ? .bold : .medium, design: .rounded))
+                .font(.system(size: 11, weight: isSelf ? .semibold : .regular, design: .rounded))
+                .foregroundStyle(isSelf ? Color.primary : .secondary)
                 .lineLimit(1)
-                .foregroundColor(isSelf ? Color.accentColor : .primary)
+            if let m = metrics {
+                Text("\(m.latencyMS) ms • \(m.throughputMbps) Mbps")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 2)
-        .animation(.snappy, value: isHovered)
+        .padding(6)
+        .animation(.easeOut(duration: 0.18), value: isHovered)
+    }
+}
+
+private struct ConnectionBadge: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.background, in: Capsule())
+            .overlay(Capsule().strokeBorder(.separator, lineWidth: 1))
+            .foregroundStyle(.secondary)
+    }
+}
+
+extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
 #Preview {
     NetworkTopologyView()
         .frame(width: 360, height: 260)
-        .preferredColorScheme(.dark)
-        .padding(40)
+        .padding(24)
 }
-
