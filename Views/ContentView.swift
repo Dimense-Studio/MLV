@@ -1296,7 +1296,7 @@ struct NetworkListView: View {
 
                 HStack(spacing: 8) {
                     Button("Pair") {
-                        WireGuardManager.shared.pair(discovered: host)
+                        pairDiscoveredNode(id: host.id)
                     }
                     .controlSize(.small)
 
@@ -1329,6 +1329,22 @@ struct NetworkListView: View {
         WireGuardManager.shared.listenPort = parsed
         WireGuardManager.shared.startDiscovery()
         settingsMessage = "Listen port updated."
+    }
+
+    private func pairDiscoveredNode(id: String) {
+        guard let latest = DiscoveryManager.shared.discovered.first(where: { $0.id == id }) else {
+            settingsMessage = "Device is no longer discoverable."
+            return
+        }
+        settingsMessage = "Pairing \(latest.name)…"
+        WireGuardManager.shared.pair(discovered: latest) { success, message in
+            if success {
+                settingsMessage = "Paired with \(latest.name)."
+                selectedNodeID = latest.id
+            } else {
+                settingsMessage = message ?? "Pairing failed."
+            }
+        }
     }
 }
 

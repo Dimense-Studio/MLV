@@ -110,11 +110,21 @@ final class WireGuardManager {
         DiscoveryManager.shared.start(myInfo: hostInfo, clusterToken: token)
     }
 
-    func pair(discovered: DiscoveryManager.DiscoveredHost) {
+    func pair(
+        discovered: DiscoveryManager.DiscoveredHost,
+        completion: ((Bool, String?) -> Void)? = nil
+    ) {
         DiscoveryManager.shared.requestPeerInfo(discovered) { info in
-            guard let info else { return }
+            guard let info else {
+                DispatchQueue.main.async {
+                    let failure = DiscoveryManager.shared.pairStatusByID[discovered.id] ?? "Pair failed"
+                    completion?(false, failure)
+                }
+                return
+            }
             DispatchQueue.main.async {
                 self.addOrUpdatePeer(from: info)
+                completion?(true, nil)
             }
         }
     }
