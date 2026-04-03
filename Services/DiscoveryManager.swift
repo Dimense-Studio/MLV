@@ -426,12 +426,11 @@ final class DiscoveryManager {
         return params
     }
 
-    /// Client-side peer-info requests should prefer a single LAN path.
-    /// This avoids noisy peer-to-peer probing (AWDL/link-local candidates)
-    /// that can produce repeated connection-refused logs for one unavailable peer.
+    /// Client-side peer-info requests allow peer-to-peer transport so
+    /// Bonjour-discovered peers on local/P2P paths can actually pair.
     private func peerInfoClientParameters() -> NWParameters {
         let params = NWParameters.tcp
-        params.includePeerToPeer = false
+        params.includePeerToPeer = true
         return params
     }
 }

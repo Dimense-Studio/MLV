@@ -26,6 +26,8 @@ class VMManager {
     // Persistent ISO authorization
     private let isoBookmarkKey = "MLV_ISO_Bookmark"
     private let clusterTokenKey = "MLV_Cluster_Token"
+    private let clusterTokenCustomizedKey = "MLV_Cluster_Token_Customized"
+    private let defaultClusterToken = "mlv-cluster"
     
     var authorizedISOURL: URL? {
         didSet {
@@ -38,17 +40,31 @@ class VMManager {
     var clusterToken: String {
         get {
             if let token = UserDefaults.standard.string(forKey: clusterTokenKey), !token.isEmpty {
+                let defaults = UserDefaults.standard
+                let hasCustomizationFlag = defaults.object(forKey: clusterTokenCustomizedKey) != nil
+                if !hasCustomizationFlag && isLegacyRandomClusterToken(token) {
+                    defaults.set(defaultClusterToken, forKey: clusterTokenKey)
+                    defaults.set(false, forKey: clusterTokenCustomizedKey)
+                    return defaultClusterToken
+                }
                 return token
             }
-            let newToken = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-            UserDefaults.standard.set(newToken, forKey: clusterTokenKey)
-            return newToken
+            UserDefaults.standard.set(defaultClusterToken, forKey: clusterTokenKey)
+            UserDefaults.standard.set(false, forKey: clusterTokenCustomizedKey)
+            return defaultClusterToken
         }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { return }
             UserDefaults.standard.set(trimmed, forKey: clusterTokenKey)
+            UserDefaults.standard.set(trimmed != defaultClusterToken, forKey: clusterTokenCustomizedKey)
         }
+    }
+
+    private func isLegacyRandomClusterToken(_ value: String) -> Bool {
+        guard value.count == 32 else { return false }
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        return value.unicodeScalars.allSatisfy { hex.contains($0) }
     }
     
     func getAvailableBridgeInterfaces() -> [VZBridgedNetworkInterface] {
