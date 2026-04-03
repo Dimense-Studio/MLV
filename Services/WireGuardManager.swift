@@ -115,7 +115,6 @@ final class WireGuardManager {
             guard let info else { return }
             DispatchQueue.main.async {
                 self.addOrUpdatePeer(from: info)
-                DiscoveryManager.shared.removeDiscovered(id: discovered.id)
             }
         }
     }

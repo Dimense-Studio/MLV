@@ -97,7 +97,6 @@ final class ClusterManager {
                 var byId = Dictionary(uniqueKeysWithValues: self.nodes.map { ($0.id, $0) })
                 byId[node.id] = node
                 self.nodes = Array(byId.values).sorted { $0.name < $1.name }
-                DiscoveryManager.shared.removeDiscovered(id: host.id)
             }
         }
     }

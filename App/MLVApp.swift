@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             VMManager.shared.refreshBackgroundExecution()
             VMManager.shared.autoStartVMsIfNeeded()
             ClusterManager.shared.start()
+            AppUpdateManager.shared.start()
         }
     }
 

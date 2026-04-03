@@ -221,32 +221,15 @@ final class DiscoveryManager {
             finished = true
             DispatchQueue.main.async {
                 self.inFlightPeerInfoRequests.remove(host.id)
-                if info == nil, self.pairStatusByID[host.id] == "Connecting…" {
-                    self.pairStatusByID[host.id] = "Failed: timeout"
+                if info == nil {
+                    let current = self.pairStatusByID[host.id] ?? ""
+                    if !current.hasPrefix("Failed"), current != "Paired" {
+                        self.pairStatusByID[host.id] = "Failed: timeout"
+                    }
                 }
             }
             completion(info)
             connection.cancel()
-        }
-
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                DispatchQueue.main.async {
-                    self.pairStatusByID[host.id] = "Connected"
-                }
-            case .failed(let err):
-                DispatchQueue.main.async {
-                    self.pairStatusByID[host.id] = "Failed: \(err)"
-                }
-                finish(nil)
-            default:
-                break
-            }
-        }
-        connection.start(queue: .global(qos: .utility))
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 6) {
-            finish(nil)
         }
 
         let nonce = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
@@ -266,34 +249,73 @@ final class DiscoveryManager {
             requesterHostInfo: requesterInfo,
             requesterSignatureBase64: Data(requesterSig).base64EncodedString()
         )
-        
-        self.sendJSONLine(connection: connection, value: req) {
-            self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (resp: DiscoveryResponse) in
-                Task { @MainActor in
-                    guard resp.nonceBase64 == req.nonceBase64,
-                          let infoData = try? JSONEncoder().encode(resp.hostInfo),
-                          let respNonce = Data(base64Encoded: resp.nonceBase64),
-                          let sigData = Data(base64Encoded: resp.signatureBase64) else {
-                        self.pairStatusByID[host.id] = "Failed: invalid response"
-                        finish(nil)
-                        return
+
+        var didStartExchange = false
+        let startExchange = {
+            if didStartExchange { return }
+            didStartExchange = true
+
+            let data = (try? JSONEncoder().encode(req)) ?? Data()
+            var line = Data()
+            line.append(data)
+            line.append(0x0A)
+            connection.send(content: line, completion: .contentProcessed { error in
+                if let error {
+                    DispatchQueue.main.async {
+                        self.pairStatusByID[host.id] = "Failed: \(error.localizedDescription)"
                     }
-                    
-                    var payload = Data()
-                    payload.append(respNonce)
-                    payload.append(infoData)
-                    let key = SymmetricKey(data: Data(self.clusterToken.utf8))
-                    let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
-                    guard Data(expected) == sigData else {
-                        self.pairStatusByID[host.id] = "Failed: auth"
-                        finish(nil)
-                        return
-                    }
-                    
-                    self.pairStatusByID[host.id] = "Paired"
-                    finish(resp.hostInfo)
+                    finish(nil)
+                    return
                 }
+
+                self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (resp: DiscoveryResponse) in
+                    Task { @MainActor in
+                        guard resp.nonceBase64 == req.nonceBase64,
+                              let infoData = try? JSONEncoder().encode(resp.hostInfo),
+                              let respNonce = Data(base64Encoded: resp.nonceBase64),
+                              let sigData = Data(base64Encoded: resp.signatureBase64) else {
+                            self.pairStatusByID[host.id] = "Failed: invalid response"
+                            finish(nil)
+                            return
+                        }
+
+                        var payload = Data()
+                        payload.append(respNonce)
+                        payload.append(infoData)
+                        let key = SymmetricKey(data: Data(self.clusterToken.utf8))
+                        let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
+                        guard Data(expected) == sigData else {
+                            self.pairStatusByID[host.id] = "Failed: auth"
+                            finish(nil)
+                            return
+                        }
+
+                        self.pairStatusByID[host.id] = "Paired"
+                        finish(resp.hostInfo)
+                    }
+                }
+            })
+        }
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                DispatchQueue.main.async {
+                    self.pairStatusByID[host.id] = "Connected"
+                }
+                startExchange()
+            case .failed(let err):
+                DispatchQueue.main.async {
+                    self.pairStatusByID[host.id] = "Failed: \(err)"
+                }
+                finish(nil)
+            default:
+                break
             }
+        }
+        connection.start(queue: .global(qos: .utility))
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 6) {
+            finish(nil)
         }
     }
     
