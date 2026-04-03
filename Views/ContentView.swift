@@ -1027,6 +1027,8 @@ struct NetworkListView: View {
     @State private var selectedNodeID: String? = nil
     @State private var showConfig = false
     @State private var settingsMessage: String?
+    @State private var isClusterTestRunning = false
+    @State private var clusterTestTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -1035,10 +1037,10 @@ struct NetworkListView: View {
                     .frame(height: 320)
                     .frame(maxWidth: .infinity)
                     .padding(8)
-                    .background(DashboardPalette.panel.opacity(0.35))
+                    .background(DashboardPalette.panel.opacity(0.22))
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(DashboardPalette.border, lineWidth: 1)
+                            .stroke(DashboardPalette.border.opacity(0.55), lineWidth: 0.8)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 16))
 
@@ -1094,6 +1096,9 @@ struct NetworkListView: View {
                 return
             }
             selectedNodeID = ids.first
+        }
+        .onDisappear {
+            stopClusterTestLoop()
         }
     }
 
@@ -1189,11 +1194,15 @@ struct NetworkListView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Copy Config") { WireGuardManager.shared.copyConfigToClipboard() }
-                Button("Open") { WireGuardManager.shared.openConfigInWireGuard() }
-                Button("Reveal") { WireGuardManager.shared.revealConfigInFinder() }
+                Button(isClusterTestRunning ? "Stop" : "Test Cluster") {
+                    if isClusterTestRunning {
+                        stopClusterTestLoop()
+                    } else {
+                        startClusterTestLoop()
+                    }
+                }
+                .controlSize(.small)
             }
-            .controlSize(.small)
 
             Divider().opacity(0.15)
 
@@ -1384,6 +1393,52 @@ struct NetworkListView: View {
         }
         return .ethernet
     }
+
+    private func startClusterTestLoop() {
+        guard !isClusterTestRunning else { return }
+        guard !WireGuardManager.shared.peers.isEmpty else {
+            settingsMessage = "No paired devices to test."
+            return
+        }
+        isClusterTestRunning = true
+        settingsMessage = "Cluster test started."
+        let senderName = WireGuardManager.shared.hostInfo.name
+        clusterTestTask = Task {
+            while !Task.isCancelled {
+                let peers = WireGuardManager.shared.peers
+                if peers.isEmpty {
+                    await MainActor.run {
+                        settingsMessage = "No paired devices available."
+                        isClusterTestRunning = false
+                    }
+                    return
+                }
+                for peer in peers {
+                    if Task.isCancelled { return }
+                    do {
+                        let result = try await ClusterManager.shared.runBandwidthTest(to: peer, senderName: senderName)
+                        await MainActor.run {
+                            settingsMessage = "100 MB -> \(result.receiverName): \(Int(result.mbps)) MB/s"
+                        }
+                    } catch {
+                        await MainActor.run {
+                            settingsMessage = "Test failed for \(peer.name): \(error.localizedDescription)"
+                        }
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+        }
+    }
+
+    private func stopClusterTestLoop() {
+        clusterTestTask?.cancel()
+        clusterTestTask = nil
+        if isClusterTestRunning {
+            settingsMessage = "Cluster test stopped."
+        }
+        isClusterTestRunning = false
+    }
 }
 
 struct NetworkDetailItem: View {
@@ -1461,6 +1516,7 @@ struct StatusBadge: View {
         case .error: return "Error"
         }
     }
+
 }
 
 

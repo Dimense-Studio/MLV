@@ -42,6 +42,14 @@ final class ClusterManager {
         let id: String
         let type: String
         let payload: Data?
+        let metadata: [String: String]?
+
+        init(id: String, type: String, payload: Data?, metadata: [String: String]? = nil) {
+            self.id = id
+            self.type = type
+            self.payload = payload
+            self.metadata = metadata
+        }
     }
     
     struct RPCResponse: Codable {
@@ -49,16 +57,34 @@ final class ClusterManager {
         let ok: Bool
         let payload: Data?
         let errorMessage: String?
+        let metadata: [String: String]?
+
+        init(id: String, ok: Bool, payload: Data?, errorMessage: String?, metadata: [String: String]? = nil) {
+            self.id = id
+            self.ok = ok
+            self.payload = payload
+            self.errorMessage = errorMessage
+            self.metadata = metadata
+        }
     }
     
     struct Envelope: Codable {
         let senderID: String
         let senderPublicKey: String
-        let sealedBoxCombinedBase64: String
+        let sealedBoxCombined: Data
+    }
+
+    struct BandwidthTestResult: Codable {
+        let receiverID: String
+        let receiverName: String
+        let mbps: Double
     }
     
     private let rpcPort: NWEndpoint.Port = 7124
+    private let maxRPCPayloadBytes = 160 * 1024 * 1024
+    private let rpcReplyMaxBytes = 4 * 1024 * 1024
     private var listener: NWListener?
+    private static let bandwidthBlob100MB = Data(repeating: 0xA5, count: 100 * 1024 * 1024)
     
     var nodes: [Node] = []
     
@@ -131,6 +157,37 @@ final class ClusterManager {
         }
         return try JSONDecoder().decode([VMInfo].self, from: data)
     }
+
+    func runBandwidthTest(to peer: WireGuardManager.Peer, senderName: String) async throws -> BandwidthTestResult {
+        let node = Node(
+            id: peer.id,
+            name: peer.name,
+            publicKey: peer.publicKey,
+            endpointHost: peer.endpointHost,
+            endpointPort: peer.endpointPort,
+            addressCIDR: peer.addressCIDR,
+            cpuCount: 0,
+            memoryGB: 0,
+            freeDiskGB: 0,
+            lastSeen: Date()
+        )
+
+        let req = RPCRequest(
+            id: UUID().uuidString,
+            type: "bandwidthTest",
+            payload: Self.bandwidthBlob100MB,
+            metadata: [
+                "senderID": WireGuardManager.shared.hostInfo.id,
+                "senderName": senderName,
+                "startedAt": String(Date().timeIntervalSince1970)
+            ]
+        )
+        let resp = try await send(req, to: node)
+        guard resp.ok, let data = resp.payload else {
+            throw NSError(domain: "ClusterRPC", code: 6, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Bandwidth test failed"])
+        }
+        return try JSONDecoder().decode(BandwidthTestResult.self, from: data)
+    }
     
     private func startListener() {
         if listener != nil { return }
@@ -140,21 +197,20 @@ final class ClusterManager {
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { return }
                 connection.start(queue: .global(qos: .utility))
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { data, _, _, _ in
+                self.receiveAll(connection: connection, maximumBytes: self.maxRPCPayloadBytes) { data in
                     Task { @MainActor in
                         guard let data,
                               let env = try? JSONDecoder().decode(Envelope.self, from: data),
-                              let combined = Data(base64Encoded: env.sealedBoxCombinedBase64),
-                              let sealed = try? ChaChaPoly.SealedBox(combined: combined),
+                              let sealed = try? ChaChaPoly.SealedBox(combined: env.sealedBoxCombined),
                               let key = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: env.senderPublicKey),
                               let decrypted = try? ChaChaPoly.open(sealed, using: key),
-                              let req = try? JSONDecoder().decode(RPCRequest.self, from: decrypted) else {
+                              let req = try? self.decodeRPCRequest(from: decrypted) else {
                             connection.cancel()
                             return
                         }
                         
                         let response = await self.handle(req)
-                        let encoded = (try? JSONEncoder().encode(response)) ?? Data()
+                        let encoded = (try? self.encodeRPCResponse(response)) ?? Data()
                         guard let replyKey = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: env.senderPublicKey),
                               let sealedReply = try? ChaChaPoly.seal(encoded, using: replyKey).combined else {
                             connection.cancel()
@@ -163,7 +219,7 @@ final class ClusterManager {
                         let replyEnv = Envelope(
                             senderID: WireGuardManager.shared.hostInfo.id,
                             senderPublicKey: WireGuardManager.shared.hostInfo.publicKey,
-                            sealedBoxCombinedBase64: sealedReply.base64EncodedString()
+                            sealedBoxCombined: sealedReply
                         )
                         let out = (try? JSONEncoder().encode(replyEnv)) ?? Data()
                         connection.send(content: out, completion: .contentProcessed { _ in
@@ -211,6 +267,27 @@ final class ClusterManager {
                 )
                 let payload = try JSONEncoder().encode(vm.id)
                 return RPCResponse(id: req.id, ok: true, payload: payload, errorMessage: nil)
+            case "bandwidthTest":
+                guard let bytes = req.payload else {
+                    throw NSError(domain: "ClusterRPC", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing test payload"])
+                }
+                let senderID = req.metadata?["senderID"] ?? "unknown"
+                let senderName = req.metadata?["senderName"] ?? "Unknown Sender"
+                let startedAt = Double(req.metadata?["startedAt"] ?? "") ?? Date().timeIntervalSince1970
+                let elapsed = max(Date().timeIntervalSince1970 - startedAt, 0.001)
+                let mbps = (Double(bytes.count) / (1024 * 1024)) / elapsed
+                AppNotifications.shared.notify(
+                    id: "cluster-bandwidth-\(senderID)",
+                    title: "Cluster Test Received",
+                    body: "\(senderName) -> \(WireGuardManager.shared.hostInfo.name): \(Int(mbps)) MB/s",
+                    minimumInterval: 1
+                )
+                let result = BandwidthTestResult(
+                    receiverID: WireGuardManager.shared.hostInfo.id,
+                    receiverName: WireGuardManager.shared.hostInfo.name,
+                    mbps: mbps
+                )
+                return RPCResponse(id: req.id, ok: true, payload: try JSONEncoder().encode(result), errorMessage: nil)
             default:
                 return RPCResponse(id: req.id, ok: false, payload: nil, errorMessage: "Unknown request type: \(req.type)")
             }
@@ -220,7 +297,7 @@ final class ClusterManager {
     }
     
     private func send(_ request: RPCRequest, to node: Node) async throws -> RPCResponse {
-        let encoded = try JSONEncoder().encode(request)
+        let encoded = try encodeRPCRequest(request)
         guard let key = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: node.publicKey) else {
             throw NSError(domain: "ClusterRPC", code: 4, userInfo: [NSLocalizedDescriptionKey: "Encryption failed"])
         }
@@ -228,7 +305,7 @@ final class ClusterManager {
         let env = Envelope(
             senderID: WireGuardManager.shared.hostInfo.id,
             senderPublicKey: WireGuardManager.shared.hostInfo.publicKey,
-            sealedBoxCombinedBase64: sealed.base64EncodedString()
+            sealedBoxCombined: sealed
         )
         let out = try JSONEncoder().encode(env)
         
@@ -244,15 +321,14 @@ final class ClusterManager {
             }
             connection.start(queue: .global(qos: .utility))
             connection.send(content: out, completion: .contentProcessed { _ in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { data, _, _, _ in
+                self.receiveAll(connection: connection, maximumBytes: self.rpcReplyMaxBytes) { data in
                     Task { @MainActor in
                         guard let data,
                               let replyEnv = try? JSONDecoder().decode(Envelope.self, from: data),
-                              let combined = Data(base64Encoded: replyEnv.sealedBoxCombinedBase64),
-                              let sealed = try? ChaChaPoly.SealedBox(combined: combined),
+                              let sealed = try? ChaChaPoly.SealedBox(combined: replyEnv.sealedBoxCombined),
                               let replyKey = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: node.publicKey),
                               let decrypted = try? ChaChaPoly.open(sealed, using: replyKey),
-                              let resp = try? JSONDecoder().decode(RPCResponse.self, from: decrypted) else {
+                              let resp = try? self.decodeRPCResponse(from: decrypted) else {
                             continuation.resume(throwing: NSError(domain: "ClusterRPC", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid response"]))
                             connection.cancel()
                             return
@@ -263,5 +339,52 @@ final class ClusterManager {
                 }
             })
         }
+    }
+
+    private func receiveAll(connection: NWConnection, maximumBytes: Int, completion: @escaping (Data?) -> Void) {
+        var buffer = Data()
+
+        func pump() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                if let data {
+                    buffer.append(data)
+                    if buffer.count > maximumBytes {
+                        completion(nil)
+                        return
+                    }
+                }
+                if error != nil {
+                    completion(nil)
+                    return
+                }
+                if isComplete {
+                    completion(buffer.isEmpty ? nil : buffer)
+                    return
+                }
+                pump()
+            }
+        }
+
+        pump()
+    }
+
+    private func encodeRPCRequest(_ value: RPCRequest) throws -> Data {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return try encoder.encode(value)
+    }
+
+    private func decodeRPCRequest(from data: Data) throws -> RPCRequest {
+        try PropertyListDecoder().decode(RPCRequest.self, from: data)
+    }
+
+    private func encodeRPCResponse(_ value: RPCResponse) throws -> Data {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return try encoder.encode(value)
+    }
+
+    private func decodeRPCResponse(from data: Data) throws -> RPCResponse {
+        try PropertyListDecoder().decode(RPCResponse.self, from: data)
     }
 }

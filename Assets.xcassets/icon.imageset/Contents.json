@@ -1,19 +1,25 @@
 {
   "images" : [
     {
-      "filename" : "icon.png",
       "idiom" : "universal",
       "scale" : "1x"
     },
     {
-      "filename" : "icon 1.png",
       "idiom" : "universal",
       "scale" : "2x"
     },
     {
-      "filename" : "icon 2.png",
       "idiom" : "universal",
       "scale" : "3x"
+    },
+    {
+      "filename" : "icon.png",
+      "idiom" : "mac",
+      "scale" : "1x"
+    },
+    {
+      "idiom" : "mac",
+      "scale" : "2x"
     }
   ],
   "info" : {

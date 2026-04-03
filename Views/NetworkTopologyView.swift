@@ -57,41 +57,50 @@ struct NetworkTopologyView: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [Color.black.opacity(0.22), Color.black.opacity(0.08)],
+                            colors: [Color.black.opacity(0.16), Color.black.opacity(0.05)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(OverlayTheme.border.opacity(0.45), lineWidth: 0.8)
+                            .stroke(OverlayTheme.border.opacity(0.28), lineWidth: 0.7)
                     )
 
                 ForEach(connections) { conn in
                     let fromPoint = position(for: conn.a, in: geo.size)
                     let toPoint = position(for: conn.b, in: geo.size)
+                    let throughput = nodes[safe: conn.b].flatMap { nodeMetrics[$0.id]?.throughputMbps } ?? 0
+                    let trafficColor = linkColor(for: throughput)
                     connectionLine(from: fromPoint,
                                    to: toPoint)
                         .stroke(OverlayTheme.textSecondary.opacity(0.28), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
 
                     connectionLine(from: fromPoint, to: toPoint)
-                        .stroke(OverlayTheme.accent.opacity(0.12), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                        .stroke(trafficColor.opacity(0.16), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
 
                     let seed = CGFloat(abs(conn.id.hashValue % 100)) / 100
                     let t1 = wrappedUnit(flowPhase + seed)
-                    let t2 = wrappedUnit(flowPhase + seed + 0.45)
+                    let t2 = wrappedUnit(flowPhase + seed + 0.42)
                     let pulse1 = point(from: fromPoint, to: toPoint, t: t1)
                     let pulse2 = point(from: fromPoint, to: toPoint, t: t2)
+                    let reverse1 = point(from: toPoint, to: fromPoint, t: wrappedUnit(flowPhase + seed + 0.2))
+                    let reverse2 = point(from: toPoint, to: fromPoint, t: wrappedUnit(flowPhase + seed + 0.68))
 
-                    TrafficDot()
+                    TrafficDot(color: trafficColor, opacity: 0.85, size: 4)
                         .position(pulse1)
-                    TrafficDot(opacity: 0.45, size: 3)
+                    TrafficDot(color: trafficColor, opacity: 0.45, size: 3)
                         .position(pulse2)
+                    TrafficDot(color: trafficColor.opacity(0.8), opacity: 0.7, size: 3.5)
+                        .position(reverse1)
+                    TrafficDot(color: trafficColor.opacity(0.7), opacity: 0.35, size: 2.8)
+                        .position(reverse2)
 
                     if let remote = nodes[safe: conn.b] {
                         LinkBadge(
                             icon: remote.linkType.icon,
-                            throughputMbps: nodeMetrics[remote.id]?.throughputMbps
+                            throughputMbps: nodeMetrics[remote.id]?.throughputMbps,
+                            color: trafficColor
                         )
                             .position(CGPoint(x: (fromPoint.x + toPoint.x) * 0.5, y: (fromPoint.y + toPoint.y) * 0.5))
                     }
@@ -112,6 +121,21 @@ struct NetworkTopologyView: View {
                         }
                         .animation(.easeOut(duration: 0.35), value: hoveredNodeID)
                 }
+
+                if let hoveredNodeID,
+                   let hoveredIndex = nodes.firstIndex(where: { $0.id == hoveredNodeID }),
+                   let hoveredNode = nodes[safe: hoveredIndex] {
+                    let anchor = position(for: hoveredIndex, in: geo.size)
+                    NodeTooltip(
+                        name: hoveredNode.name,
+                        kind: hoveredNode.kind,
+                        latencyMS: nodeMetrics[hoveredNode.id]?.latencyMS,
+                        throughputMbps: nodeMetrics[hoveredNode.id]?.throughputMbps
+                    )
+                    .position(x: min(max(anchor.x + 62, 90), geo.size.width - 90),
+                              y: min(max(anchor.y - 26, 34), geo.size.height - 34))
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.35), value: nodes.map(\.id))
@@ -126,13 +150,26 @@ struct NetworkTopologyView: View {
     
     func position(for index: Int, in size: CGSize) -> CGPoint {
         let count = max(1, nodes.count)
-        let radius = min(size.width, size.height) * 0.34
         let center = CGPoint(x: size.width/2, y: size.height/2)
         if count == 1 { return center }
-        let angle = CGFloat(index) / CGFloat(count) * 2 * .pi - .pi/2
+        if nodes[safe: index]?.kind == .local {
+            return center
+        }
+        let localIndex = nodes.firstIndex(where: { $0.kind == .local }) ?? 0
+        let peers = nodes.indices.filter { $0 != localIndex }
+        guard let ringIndex = peers.firstIndex(of: index) else { return center }
+        let ringCount = max(1, peers.count)
+
+        let nodeHash = abs(nodes[index].id.hashValue)
+        let jitter = CGFloat(nodeHash % 17) / 100.0
+        let baseAngle = CGFloat(ringIndex) / CGFloat(ringCount) * 2 * .pi - .pi / 2
+        let angle = baseAngle + jitter
+        let baseRadius = min(size.width, size.height) * 0.34
+        let radius = baseRadius * (0.88 + CGFloat((nodeHash % 9)) * 0.02)
+
         return CGPoint(
             x: center.x + cos(angle) * radius,
-            y: center.y + sin(angle) * radius
+            y: center.y + sin(angle) * radius * 0.9
         )
     }
     var connections: [Connection] {
@@ -157,6 +194,12 @@ struct NetworkTopologyView: View {
     private func wrappedUnit(_ v: CGFloat) -> CGFloat {
         let x = v - floor(v)
         return x < 0 ? x + 1 : x
+    }
+
+    private func linkColor(for throughput: Int) -> Color {
+        if throughput >= 320 { return Color.green.opacity(0.9) }
+        if throughput >= 160 { return Color.cyan.opacity(0.9) }
+        return Color.orange.opacity(0.9)
     }
 }
 
@@ -217,6 +260,7 @@ private struct NodeCircle: View {
 private struct LinkBadge: View {
     let icon: String
     let throughputMbps: Int?
+    let color: Color
 
     var body: some View {
         HStack(spacing: 4) {
@@ -227,23 +271,65 @@ private struct LinkBadge: View {
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
             }
         }
-        .foregroundStyle(OverlayTheme.textSecondary.opacity(0.95))
+        .foregroundStyle(color.opacity(0.95))
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
-        .background(Color.black.opacity(0.45), in: Capsule(style: .continuous))
+        .background(Color.black.opacity(0.42), in: Capsule(style: .continuous))
         .overlay(Capsule(style: .continuous).stroke(OverlayTheme.border.opacity(0.6), lineWidth: 0.7))
     }
 }
 
 private struct TrafficDot: View {
+    var color: Color = OverlayTheme.accent
     var opacity: Double = 0.85
     var size: CGFloat = 4
 
     var body: some View {
         Circle()
-            .fill(OverlayTheme.accent.opacity(opacity))
+            .fill(color.opacity(opacity))
             .frame(width: size, height: size)
-            .shadow(color: OverlayTheme.accent.opacity(0.4), radius: 2, x: 0, y: 0)
+            .shadow(color: color.opacity(0.35), radius: 2, x: 0, y: 0)
+    }
+}
+
+private struct NodeTooltip: View {
+    let name: String
+    let kind: NetworkTopologyView.TopologyNode.Kind
+    let latencyMS: Int?
+    let throughputMbps: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(OverlayTheme.textPrimary)
+            HStack(spacing: 6) {
+                Text(kindLabel)
+                if let latencyMS {
+                    Text("\(latencyMS) ms")
+                }
+                if let throughputMbps {
+                    Text("\(throughputMbps) Mbps")
+                }
+            }
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(OverlayTheme.textSecondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(OverlayTheme.border.opacity(0.55), lineWidth: 0.7)
+        )
+    }
+
+    private var kindLabel: String {
+        switch kind {
+        case .local: return "local"
+        case .paired: return "paired"
+        case .discovered: return "discover"
+        }
     }
 }
 
