@@ -3,6 +3,19 @@ import Network
 import SwiftUI
 import CryptoKit
 
+private nonisolated struct DiscoveryRequest: Codable {
+    let nonceBase64: String
+    let tokenHashBase64: String
+    let requesterHostInfo: WireGuardManager.HostInfo
+    let requesterSignatureBase64: String
+}
+
+private nonisolated struct DiscoveryResponse: Codable {
+    let hostInfo: WireGuardManager.HostInfo
+    let nonceBase64: String
+    let signatureBase64: String
+}
+
 @Observable
 final class DiscoveryManager {
     struct DiscoveredHost: Identifiable, Hashable {
@@ -16,19 +29,6 @@ final class DiscoveryManager {
         let lastSeen: Date
     }
     
-    struct DiscoveryRequest: Codable {
-        let nonceBase64: String
-        let tokenHashBase64: String
-        let requesterHostInfo: WireGuardManager.HostInfo
-        let requesterSignatureBase64: String
-    }
-    
-    struct DiscoveryResponse: Codable {
-        let hostInfo: WireGuardManager.HostInfo
-        let nonceBase64: String
-        let signatureBase64: String
-    }
-
     static let shared = DiscoveryManager()
 
     private let serviceType = "_mlv._tcp"
