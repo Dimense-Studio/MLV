@@ -52,6 +52,9 @@ class VMManager {
     }
     
     func getAvailableBridgeInterfaces() -> [VZBridgedNetworkInterface] {
+        guard EntitlementChecker.hasEntitlement("com.apple.vm.networking") else {
+            return []
+        }
         return VZBridgedNetworkInterface.networkInterfaces
     }
 

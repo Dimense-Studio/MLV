@@ -39,6 +39,9 @@ final class DiscoveryManager {
     private var myID: String?
     private var isRunning = false
     private var clusterToken: String = ""
+    private var inFlightPeerInfoRequests: Set<String> = []
+    private var lastPeerInfoRequestAt: [String: Date] = [:]
+    private let peerInfoRequestCooldown: TimeInterval = 2.0
     
     var onUpdate: (([DiscoveredHost]) -> Void)?
 
@@ -71,7 +74,7 @@ final class DiscoveryManager {
 
     private func startListener(myInfo: WireGuardManager.HostInfo) {
         if listener != nil { return }
-        let params = NWParameters.tcp
+        let params = discoveryParameters()
         do {
             let listener = try NWListener(using: params, on: port)
             listener.service = NWListener.Service(
@@ -139,7 +142,7 @@ final class DiscoveryManager {
 
     private func startBrowser() {
         if browser != nil { return }
-        let params = NWParameters.tcp
+        let params = discoveryParameters()
         let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: params)
 
         browser.browseResultsChangedHandler = { results, _ in
@@ -197,11 +200,35 @@ final class DiscoveryManager {
     }
 
     func requestPeerInfo(_ host: DiscoveredHost, completion: @escaping (WireGuardManager.HostInfo?) -> Void) {
-        let params = NWParameters.tcp
+        let now = Date()
+        if inFlightPeerInfoRequests.contains(host.id) {
+            return
+        }
+        if let last = lastPeerInfoRequestAt[host.id], now.timeIntervalSince(last) < peerInfoRequestCooldown {
+            return
+        }
+        inFlightPeerInfoRequests.insert(host.id)
+        lastPeerInfoRequestAt[host.id] = now
+
+        let params = discoveryParameters()
         let connection = NWConnection(to: host.endpoint, using: params)
         DispatchQueue.main.async {
             self.pairStatusByID[host.id] = "Connecting…"
         }
+        var finished = false
+        let finish: (WireGuardManager.HostInfo?) -> Void = { info in
+            if finished { return }
+            finished = true
+            DispatchQueue.main.async {
+                self.inFlightPeerInfoRequests.remove(host.id)
+                if info == nil, self.pairStatusByID[host.id] == "Connecting…" {
+                    self.pairStatusByID[host.id] = "Failed: timeout"
+                }
+            }
+            completion(info)
+            connection.cancel()
+        }
+
         connection.stateUpdateHandler = { state in
             switch state {
             case .ready:
@@ -212,13 +239,15 @@ final class DiscoveryManager {
                 DispatchQueue.main.async {
                     self.pairStatusByID[host.id] = "Failed: \(err)"
                 }
-                completion(nil)
-                connection.cancel()
+                finish(nil)
             default:
                 break
             }
         }
         connection.start(queue: .global(qos: .utility))
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 6) {
+            finish(nil)
+        }
 
         let nonce = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         let tokenHash = Data(SHA256.hash(data: Data(clusterToken.utf8)))
@@ -246,8 +275,7 @@ final class DiscoveryManager {
                           let respNonce = Data(base64Encoded: resp.nonceBase64),
                           let sigData = Data(base64Encoded: resp.signatureBase64) else {
                         self.pairStatusByID[host.id] = "Failed: invalid response"
-                        completion(nil)
-                        connection.cancel()
+                        finish(nil)
                         return
                     }
                     
@@ -258,14 +286,12 @@ final class DiscoveryManager {
                     let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
                     guard Data(expected) == sigData else {
                         self.pairStatusByID[host.id] = "Failed: auth"
-                        completion(nil)
-                        connection.cancel()
+                        finish(nil)
                         return
                     }
                     
                     self.pairStatusByID[host.id] = "Paired"
-                    completion(resp.hostInfo)
-                    connection.cancel()
+                    finish(resp.hostInfo)
                 }
             }
         }
@@ -325,5 +351,11 @@ final class DiscoveryManager {
         }
         
         pump()
+    }
+
+    private func discoveryParameters() -> NWParameters {
+        let params = NWParameters.tcp
+        params.includePeerToPeer = true
+        return params
     }
 }

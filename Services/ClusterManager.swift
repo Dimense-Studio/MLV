@@ -69,8 +69,9 @@ final class ClusterManager {
         WireGuardManager.shared.startDiscovery()
         DiscoveryManager.shared.onUpdate = { [weak self] hosts in
             guard let self else { return }
+            let ids = Set(hosts.map(\.id))
+            WireGuardManager.shared.removeStalePeers(currentIDs: ids)
             for host in hosts {
-                WireGuardManager.shared.pair(discovered: host)
                 self.refreshNodeInfo(for: host)
             }
         }
@@ -80,6 +81,7 @@ final class ClusterManager {
         DiscoveryManager.shared.requestPeerInfo(host) { info in
             guard let info else { return }
             DispatchQueue.main.async {
+                WireGuardManager.shared.addOrUpdatePeer(from: info)
                 let node = Node(
                     id: info.id,
                     name: info.name,
@@ -95,6 +97,7 @@ final class ClusterManager {
                 var byId = Dictionary(uniqueKeysWithValues: self.nodes.map { ($0.id, $0) })
                 byId[node.id] = node
                 self.nodes = Array(byId.values).sorted { $0.name < $1.name }
+                DiscoveryManager.shared.removeDiscovered(id: host.id)
             }
         }
     }
