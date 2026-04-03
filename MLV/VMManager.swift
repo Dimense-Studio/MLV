@@ -15,6 +15,11 @@ class VMManager {
     private var wgForwarderTargetIP: [UUID: String] = [:]
     private var serialReadPipes: [UUID: Pipe] = [:]
     private var pollBuffers: [UUID: String] = [:]
+    private var vmPressureStartTimes: [UUID: Date] = [:]
+    private var vmPressureNotified: Set<UUID> = []
+    private var hostPressureStartTime: Date? = nil
+    private var hostPressureNotified = false
+    private var knownRemoteNodeIDs: Set<String> = []
     
     // Persistent ISO authorization
     private let isoBookmarkKey = "MLV_ISO_Bookmark"
@@ -52,6 +57,7 @@ class VMManager {
         loadBookmark()
         loadStoredVMs()
         startDataPolling()
+        startLimitMonitoring()
     }
     
     private func loadStoredVMs() {
@@ -81,6 +87,11 @@ class VMManager {
             vm.isMaster = meta.isMaster
             vm.networkMode = VMNetworkMode(rawValue: meta.networkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
             vm.bridgeInterfaceName = meta.bridgeInterfaceName
+            vm.secondaryNetworkEnabled = meta.secondaryNetworkEnabled ?? false
+            vm.secondaryNetworkMode = VMNetworkMode(rawValue: meta.secondaryNetworkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
+            vm.secondaryBridgeInterfaceName = meta.secondaryBridgeInterfaceName
+            vm.monitoredProcessPID = meta.monitoredProcessPID ?? 1
+            vm.monitoredProcessName = meta.monitoredProcessName ?? ""
             vm.clusterRole = VMClusterRole(rawValue: meta.clusterRole ?? VMClusterRole.node.rawValue) ?? .node
             vm.wgControlPrivateKeyBase64 = meta.wgControlPrivateKeyBase64
             vm.wgControlPublicKeyBase64 = meta.wgControlPublicKeyBase64
@@ -104,8 +115,6 @@ class VMManager {
     }
     
     func autoStartVMsIfNeeded() {
-        if !AppSettingsStore.shared.autoStartVMsOnLaunch { return }
-        
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             
@@ -122,7 +131,7 @@ class VMManager {
     }
     
     private func startDataPolling() {
-        Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { _ in
+        Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
             Task { @MainActor in
                 for vm in self.virtualMachines where vm.state == .running {
                     self.updateDetectedIPAddress(for: vm)
@@ -131,23 +140,90 @@ class VMManager {
                         self.evaluateVMHealth(vm)
                     }
                 }
+                self.evaluateLimitAlerts()
+            }
+        }
+    }
+
+    private func startLimitMonitoring() {
+        Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
+            Task { @MainActor in
+                self.evaluateLimitAlerts()
             }
         }
     }
     
     private func pollVMData(_ vm: VirtualMachine) {
         guard let pipe = vm.serialWritePipe else { return }
+        let normalizedVMName = vm.name
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "_", with: "-")
+        let autoPattern = "mlv-\(normalizedVMName)"
+        let shellAutoPattern = shellSingleQuoted(autoPattern)
         
         let pollCmd = """
         echo "---POLL_START---"
+        export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
         ip -4 addr show | grep inet | grep -v 127.0.0.1 | awk '{print $2}' | cut -d/ -f1 | head -n 1
         ip route show default | awk '{print $3}' | head -n 1
         cat /etc/resolv.conf | grep nameserver | awk '{print $2}' | xargs echo
-        if command -v kubectl >/dev/null; then
-          kubectl get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" | head -n 20
+        echo "---VM_USAGE_START---"
+        awk '/^cpu / {print "CPU_TICKS " $2 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9; exit}' /proc/stat 2>/dev/null || echo "CPU_TICKS 0 0 0 0 0 0 0 0"
+        awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {avail=$2} END {if (total>0) print "MEM_KB " total " " avail; else print "MEM_KB 0 0"}' /proc/meminfo 2>/dev/null
+        df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print "DISK_PCT " $5}' || echo "DISK_PCT 0"
+        PID=\(max(0, vm.monitoredProcessPID))
+        if [ "$PID" -le 1 ]; then
+          PID=$(pgrep -fo -- \(shellAutoPattern) 2>/dev/null || echo 0)
+        fi
+        echo "PID_SELECTED $PID"
+        if [ "$PID" -gt 0 ] && [ -r "/proc/$PID/stat" ]; then
+          awk -v pid="$PID" '$1 == pid {print "PID_TICKS " $14 " " $15; found=1} END {if (!found) print "PID_TICKS 0 0"}' /proc/$PID/stat 2>/dev/null
+          awk -v pid="$PID" '/^VmRSS:/ {print "PID_RSS_KB " $2; found=1} END {if (!found) print "PID_RSS_KB 0"}' /proc/$PID/status 2>/dev/null
+        else
+          echo "PID_TICKS 0 0"
+          echo "PID_RSS_KB 0"
+        fi
+        head -n 1 /proc/stat 2>/dev/null || true
+        grep -m1 '^MemTotal:' /proc/meminfo 2>/dev/null || true
+        grep -m1 '^MemAvailable:' /proc/meminfo 2>/dev/null || true
+        df -P / 2>/dev/null | head -n 2 || true
+        echo "---VM_USAGE_END---"
+        echo "---PODS_START---"
+        KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+        if [ -z "$KUBECTL_BIN" ] && [ -x /usr/local/bin/kubectl ]; then KUBECTL_BIN=/usr/local/bin/kubectl; fi
+        if [ -z "$KUBECTL_BIN" ] && [ -x /usr/bin/kubectl ]; then KUBECTL_BIN=/usr/bin/kubectl; fi
+        if [ -n "$KUBECTL_BIN" ]; then
+          "$KUBECTL_BIN" get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" | awk '{print $1 "|" $2 "|" $3 "|" $4 "|" $5}' | head -n 40
         else
           echo "K3S_NOT_READY"
         fi
+        echo "---PODS_END---"
+        echo "---CONTAINERS_START---"
+        DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
+        NERDCTL_BIN="$(command -v nerdctl 2>/dev/null || true)"
+        PODMAN_BIN="$(command -v podman 2>/dev/null || true)"
+        CRICTL_BIN="$(command -v crictl 2>/dev/null || true)"
+        if [ -z "$DOCKER_BIN" ] && [ -x /usr/local/bin/docker ]; then DOCKER_BIN=/usr/local/bin/docker; fi
+        if [ -z "$DOCKER_BIN" ] && [ -x /usr/bin/docker ]; then DOCKER_BIN=/usr/bin/docker; fi
+        if [ -z "$NERDCTL_BIN" ] && [ -x /usr/local/bin/nerdctl ]; then NERDCTL_BIN=/usr/local/bin/nerdctl; fi
+        if [ -z "$NERDCTL_BIN" ] && [ -x /usr/bin/nerdctl ]; then NERDCTL_BIN=/usr/bin/nerdctl; fi
+        if [ -z "$PODMAN_BIN" ] && [ -x /usr/local/bin/podman ]; then PODMAN_BIN=/usr/local/bin/podman; fi
+        if [ -z "$PODMAN_BIN" ] && [ -x /usr/bin/podman ]; then PODMAN_BIN=/usr/bin/podman; fi
+        if [ -z "$CRICTL_BIN" ] && [ -x /usr/local/bin/crictl ]; then CRICTL_BIN=/usr/local/bin/crictl; fi
+        if [ -z "$CRICTL_BIN" ] && [ -x /usr/bin/crictl ]; then CRICTL_BIN=/usr/bin/crictl; fi
+        if [ -n "$DOCKER_BIN" ]; then
+          "$DOCKER_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|docker' 2>/dev/null | head -n 40
+        elif [ -n "$NERDCTL_BIN" ]; then
+          "$NERDCTL_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|nerdctl' 2>/dev/null | head -n 40
+        elif [ -n "$PODMAN_BIN" ]; then
+          "$PODMAN_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|podman' 2>/dev/null | head -n 40
+        elif [ -n "$CRICTL_BIN" ]; then
+          "$CRICTL_BIN" ps --no-trunc 2>/dev/null | awk 'NR>1 {print $NF "|" $2 "|" $5 "|" "crictl"}' | head -n 40
+        else
+          echo "CONTAINERS_NOT_READY"
+        fi
+        echo "---CONTAINERS_END---"
         echo "---POLL_END---"
         """
         
@@ -168,7 +244,20 @@ class VMManager {
         }
     }
     
-    func createLinuxVM(name: String? = nil, cpus: Int = 4, ramGB: Int = 8, sysDiskGB: Int = 64, dataDiskGB: Int = 100, isMaster: Bool = false, distro: VirtualMachine.LinuxDistro = .debian13) async throws -> VirtualMachine {
+    func createLinuxVM(
+        name: String? = nil,
+        cpus: Int = 4,
+        ramGB: Int = 8,
+        sysDiskGB: Int = 64,
+        dataDiskGB: Int = 100,
+        isMaster: Bool = false,
+        distro: VirtualMachine.LinuxDistro = .debian13,
+        networkMode: VMNetworkMode = .nat,
+        bridgeInterfaceName: String? = nil,
+        secondaryNetworkEnabled: Bool = false,
+        secondaryNetworkMode: VMNetworkMode = .nat,
+        secondaryBridgeInterfaceName: String? = nil
+    ) async throws -> VirtualMachine {
         if !VZVirtualMachine.isSupported {
             throw VMError.virtualizationNotSupported
         }
@@ -179,8 +268,13 @@ class VMManager {
         let vm = VirtualMachine(name: vmName, isoURL: placeholderURL, cpus: cpus, ramGB: ramGB, sysDiskGB: sysDiskGB, dataDiskGB: dataDiskGB)
         vm.isMaster = isMaster
         vm.selectedDistro = distro
-        vm.networkMode = .nat
-        vm.bridgeInterfaceName = nil
+        vm.networkMode = networkMode
+        vm.bridgeInterfaceName = networkMode == .bridge ? bridgeInterfaceName : nil
+        vm.secondaryNetworkEnabled = secondaryNetworkEnabled
+        vm.secondaryNetworkMode = secondaryNetworkMode
+        vm.secondaryBridgeInterfaceName = (secondaryNetworkEnabled && secondaryNetworkMode == .bridge) ? secondaryBridgeInterfaceName : nil
+        vm.monitoredProcessPID = Int.random(in: 100...999_999)
+        vm.monitoredProcessName = autoPattern(for: vm.name)
         vm.clusterRole = isMaster ? .master : .node
         
         let (controlPorts, dataPorts) = allocateWireGuardPorts(for: vm.id)
@@ -297,11 +391,14 @@ class VMManager {
             vm.addLog("Virtualization engine started.")
             refreshBackgroundExecution()
             updateDetectedIPAddress(for: vm)
+            pollVMData(vm)
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self.updateDetectedIPAddress(for: vm)
+                self.pollVMData(vm)
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 self.updateDetectedIPAddress(for: vm)
+                self.pollVMData(vm)
             }
             
         } catch {
@@ -378,9 +475,23 @@ class VMManager {
               let endRange = output.range(of: "---POLL_END---") else { return }
         
         let rawContent = output[startRange.upperBound..<endRange.lowerBound]
-        let lines = rawContent.components(separatedBy: .newlines)
+        applyGuestUsage(from: String(rawContent), to: vm)
+        var lines = rawContent.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let podsLines = extractSectionLines(
+            from: &lines,
+            startMarker: "---PODS_START---",
+            endMarker: "---PODS_END---"
+        )
+        let containerLines = extractSectionLines(
+            from: &lines,
+            startMarker: "---CONTAINERS_START---",
+            endMarker: "---CONTAINERS_END---"
+        )
+        lines = stripGuestUsageMarkers(from: lines)
+        vm.pods = parsePods(from: podsLines)
+        vm.containers = parseContainers(from: containerLines)
         
         if lines.count >= 3 {
             vm.ipAddress = lines[0]
@@ -388,30 +499,295 @@ class VMManager {
             vm.dns = lines[2].components(separatedBy: " ")
             vm.isConnected = true
             ensureWireGuardForwarders(for: vm)
-            
-            if lines.count > 3 {
-                if lines[3].contains("K3S_NOT_READY") {
-                    vm.pods = []
-                    return
+        }
+    }
+
+    private func extractSectionLines(
+        from lines: inout [String],
+        startMarker: String,
+        endMarker: String
+    ) -> [String] {
+        guard let startIndex = lines.firstIndex(of: startMarker) else { return [] }
+        guard let endIndex = lines[(startIndex + 1)...].firstIndex(of: endMarker), endIndex > startIndex else {
+            lines.remove(at: startIndex)
+            return []
+        }
+
+        let section = Array(lines[(startIndex + 1)..<endIndex])
+        lines.removeSubrange(startIndex...endIndex)
+        return section
+    }
+
+    private func parsePods(from lines: [String]) -> [VirtualMachine.Pod] {
+        guard !lines.contains(where: { $0.contains("K3S_NOT_READY") }) else { return [] }
+        var pods: [VirtualMachine.Pod] = []
+        for line in lines {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 3 else { continue }
+            pods.append(
+                VirtualMachine.Pod(
+                    name: parts[safe: 1] ?? "unknown",
+                    status: parts[safe: 2] ?? "Unknown",
+                    cpu: parts[safe: 3].flatMap { $0.isEmpty ? nil : $0 } ?? "N/A",
+                    ram: parts[safe: 4].flatMap { $0.isEmpty ? nil : $0 } ?? "N/A",
+                    namespace: parts[safe: 0] ?? "default"
+                )
+            )
+        }
+        return pods
+    }
+
+    private func parseContainers(from lines: [String]) -> [VirtualMachine.Container] {
+        guard !lines.contains(where: { $0.contains("CONTAINERS_NOT_READY") }) else { return [] }
+        var containers: [VirtualMachine.Container] = []
+        for line in lines {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 3 else { continue }
+            containers.append(
+                VirtualMachine.Container(
+                    name: parts[safe: 0] ?? "container",
+                    image: parts[safe: 1] ?? "unknown",
+                    status: parts[safe: 2] ?? "Unknown",
+                    runtime: parts[safe: 3].flatMap { $0.isEmpty ? nil : $0 } ?? "docker"
+                )
+            )
+        }
+        return containers
+    }
+
+    private func stripGuestUsageMarkers(from lines: [String]) -> [String] {
+        guard
+            let startIndex = lines.firstIndex(where: { $0.contains("---VM_USAGE_START---") }),
+            let endIndex = lines[startIndex...].firstIndex(where: { $0.contains("---VM_USAGE_END---") }),
+            endIndex >= startIndex
+        else {
+            return lines
+        }
+
+        var trimmed = lines
+        trimmed.removeSubrange(startIndex...endIndex)
+        return trimmed
+    }
+
+    private func applyGuestUsage(from usageBlock: String, to vm: VirtualMachine) {
+        guard vm.state == .running else { return }
+        let previousTotalTicks = vm.lastGuestCPUTotalTicks
+        var currentTotalTicks: UInt64?
+        var currentMemTotalKB: Int?
+
+        if let cpuValues = captureInts(in: usageBlock, pattern: #"CPU_TICKS\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"#),
+           cpuValues.count >= 8 {
+            let user = UInt64(cpuValues[0])
+            let nice = UInt64(cpuValues[1])
+            let system = UInt64(cpuValues[2])
+            let idle = UInt64(cpuValues[3])
+            let iowait = UInt64(cpuValues[4])
+            let irq = UInt64(cpuValues[5])
+            let softirq = UInt64(cpuValues[6])
+            let steal = UInt64(cpuValues[7])
+
+            let total = user + nice + system + idle + iowait + irq + softirq + steal
+            let idleTotal = idle + iowait
+            currentTotalTicks = total
+
+            if let previousTotal = vm.lastGuestCPUTotalTicks,
+               let previousIdle = vm.lastGuestCPUIdleTicks,
+               total > previousTotal,
+               idleTotal >= previousIdle {
+                let totalDelta = total - previousTotal
+                let idleDelta = idleTotal - previousIdle
+                if totalDelta > 0 {
+                    let busyDelta = totalDelta - idleDelta
+                    let usage = Int((Double(busyDelta) / Double(totalDelta)) * 100.0)
+                    vm.guestCPUUsagePercent = min(100, max(0, usage))
+                    vm.hasGuestUsageSample = true
                 }
-                
-                var newPods: [VirtualMachine.Pod] = []
-                for i in 3..<lines.count {
-                    let parts = lines[i].components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                    if parts.count >= 3 {
-                        let pod = VirtualMachine.Pod(
-                            name: parts[1],
-                            status: parts[2],
-                            cpu: parts.count > 3 ? parts[3] : "N/A",
-                            ram: parts.count > 4 ? parts[4] : "N/A",
-                            namespace: parts[0]
-                        )
-                        newPods.append(pod)
-                    }
-                }
-                vm.pods = newPods
+            }
+
+            vm.lastGuestCPUTotalTicks = total
+            vm.lastGuestCPUIdleTicks = idleTotal
+        }
+
+        if let memValues = captureInts(in: usageBlock, pattern: #"MEM_KB\s+(\d+)\s+(\d+)"#), memValues.count >= 2 {
+            let totalKB = memValues[0]
+            let availableKB = memValues[1]
+            currentMemTotalKB = totalKB
+            if totalKB > 0 {
+                let used = totalKB - max(0, availableKB)
+                let usage = Int((Double(used) / Double(totalKB)) * 100.0)
+                vm.guestMemoryUsagePercent = min(100, max(0, usage))
+                vm.hasGuestUsageSample = true
             }
         }
+
+        if let diskValues = captureInts(in: usageBlock, pattern: #"DISK_PCT\s+(\d+)"#), let disk = diskValues.first {
+            vm.guestDiskUsagePercent = min(100, max(0, disk))
+            vm.hasGuestUsageSample = true
+        }
+
+        // PID-based process telemetry (preferred when available).
+        if let pidTickValues = captureInts(in: usageBlock, pattern: #"PID_TICKS\s+(\d+)\s+(\d+)"#), pidTickValues.count >= 2 {
+            let processTicks = UInt64(pidTickValues[0] + pidTickValues[1])
+            if let previousProcessTicks = vm.lastMonitoredProcessTicks,
+               let previousTotalTicks,
+               let currentTotalTicks,
+               currentTotalTicks > previousTotalTicks,
+               processTicks >= previousProcessTicks {
+                let deltaProcess = processTicks - previousProcessTicks
+                let deltaTotal = currentTotalTicks - previousTotalTicks
+                if deltaTotal > 0 {
+                    let usage = Int((Double(deltaProcess) / Double(deltaTotal)) * 100.0)
+                    vm.guestCPUUsagePercent = min(100, max(0, usage))
+                    vm.hasGuestUsageSample = true
+                }
+            }
+            vm.lastMonitoredProcessTicks = processTicks
+        }
+
+        if let selectedPID = captureInts(in: usageBlock, pattern: #"PID_SELECTED\s+(\d+)"#)?.first, selectedPID > 1 {
+            vm.monitoredProcessPID = selectedPID
+        }
+
+        if let pidRSS = captureInts(in: usageBlock, pattern: #"PID_RSS_KB\s+(\d+)"#)?.first,
+           let totalKB = currentMemTotalKB,
+           totalKB > 0,
+           pidRSS > 0 {
+            let usage = Int((Double(pidRSS) / Double(totalKB)) * 100.0)
+            vm.guestMemoryUsagePercent = min(100, max(0, usage))
+            vm.hasGuestUsageSample = true
+        }
+
+        // Fallback parser for raw proc/df lines when awk-based formatted lines are missing.
+        if !vm.hasGuestUsageSample {
+            if let rawCPU = captureInts(in: usageBlock, pattern: #"(?m)^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"#),
+               rawCPU.count >= 8 {
+                let total = rawCPU.reduce(0, +)
+                let idleTotal = rawCPU[3] + rawCPU[4]
+                if let previousTotal = vm.lastGuestCPUTotalTicks,
+                   let previousIdle = vm.lastGuestCPUIdleTicks,
+                   UInt64(total) > previousTotal,
+                   UInt64(idleTotal) >= previousIdle {
+                    let totalDelta = UInt64(total) - previousTotal
+                    let idleDelta = UInt64(idleTotal) - previousIdle
+                    if totalDelta > 0 {
+                        let busyDelta = totalDelta - idleDelta
+                        let usage = Int((Double(busyDelta) / Double(totalDelta)) * 100.0)
+                        vm.guestCPUUsagePercent = min(100, max(0, usage))
+                        vm.hasGuestUsageSample = true
+                    }
+                }
+                vm.lastGuestCPUTotalTicks = UInt64(total)
+                vm.lastGuestCPUIdleTicks = UInt64(idleTotal)
+                currentTotalTicks = UInt64(total)
+            }
+
+            let memTotal = captureInts(in: usageBlock, pattern: #"MemTotal:\s+(\d+)"#)?.first ?? 0
+            let memAvail = captureInts(in: usageBlock, pattern: #"MemAvailable:\s+(\d+)"#)?.first ?? 0
+            if memTotal > 0 {
+                currentMemTotalKB = memTotal
+                let used = memTotal - max(0, memAvail)
+                let usage = Int((Double(used) / Double(memTotal)) * 100.0)
+                vm.guestMemoryUsagePercent = min(100, max(0, usage))
+                vm.hasGuestUsageSample = true
+            }
+
+            if let rawDisk = captureInts(in: usageBlock, pattern: #"(?m)^\S+\s+\d+\s+\d+\s+\d+\s+(\d+)%\s+/"#)?.first {
+                vm.guestDiskUsagePercent = min(100, max(0, rawDisk))
+                vm.hasGuestUsageSample = true
+            }
+        }
+    }
+
+    private func captureInts(in text: String, pattern: String) -> [Int]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else { return nil }
+        var values: [Int] = []
+        for index in 1..<match.numberOfRanges {
+            let capture = match.range(at: index)
+            guard let swiftRange = Range(capture, in: text) else { return nil }
+            values.append(Int(text[swiftRange]) ?? 0)
+        }
+        return values
+    }
+
+    private func autoPattern(for vmName: String) -> String {
+        "mlv-" + vmName
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "_", with: "-")
+    }
+
+    private func shellSingleQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private func evaluateLimitAlerts() {
+        AppNotifications.shared.requestIfNeeded()
+        let now = Date()
+
+        for vm in virtualMachines where vm.state == .running {
+            let isUnderPressure = vm.hasGuestUsageSample &&
+                (vm.guestCPUUsagePercent >= 90 || vm.guestMemoryUsagePercent >= 90 || vm.guestDiskUsagePercent >= 90)
+
+            if isUnderPressure {
+                let start = vmPressureStartTimes[vm.id] ?? now
+                vmPressureStartTimes[vm.id] = start
+                if !vmPressureNotified.contains(vm.id), now.timeIntervalSince(start) >= 60 {
+                    let reasons = [
+                        vm.guestCPUUsagePercent >= 90 ? "CPU \(vm.guestCPUUsagePercent)%" : nil,
+                        vm.guestMemoryUsagePercent >= 90 ? "RAM \(vm.guestMemoryUsagePercent)%" : nil,
+                        vm.guestDiskUsagePercent >= 90 ? "Disk \(vm.guestDiskUsagePercent)%" : nil
+                    ]
+                        .compactMap { $0 }
+                        .joined(separator: ", ")
+                    AppNotifications.shared.notify(
+                        title: "VM Resource Pressure",
+                        body: "\(vm.name) is near limit for over 1 minute (\(reasons))."
+                    )
+                    vmPressureNotified.insert(vm.id)
+                }
+            } else {
+                vmPressureStartTimes[vm.id] = nil
+                vmPressureNotified.remove(vm.id)
+            }
+        }
+
+        let totalAllocatedCPU = virtualMachines.filter { $0.state == .running }.reduce(0) { $0 + $1.cpuCount }
+        let totalAllocatedMemoryGB = virtualMachines.filter { $0.state == .running }.reduce(0) { $0 + $1.memorySizeGB }
+        let hostCPUThreshold = max(1, Int(Double(HostResources.cpuCount) * 0.9))
+        let hostMemoryThreshold = max(1, Int(Double(HostResources.totalMemoryGB) * 0.9))
+        let hostDiskLowThresholdGB = 20
+        let hostUnderPressure = totalAllocatedCPU >= hostCPUThreshold ||
+            totalAllocatedMemoryGB >= hostMemoryThreshold ||
+            HostResources.freeDiskSpaceGB <= hostDiskLowThresholdGB
+
+        if hostUnderPressure {
+            let start = hostPressureStartTime ?? now
+            hostPressureStartTime = start
+            if !hostPressureNotified, now.timeIntervalSince(start) >= 60 {
+                AppNotifications.shared.notify(
+                    title: "Host Near Capacity",
+                    body: "Host resources are near limits for over 1 minute (CPU/RAM allocation or free disk)."
+                )
+                hostPressureNotified = true
+            }
+        } else {
+            hostPressureStartTime = nil
+            hostPressureNotified = false
+        }
+
+        let currentRemoteIDs = Set(DiscoveryManager.shared.discovered.map(\.id))
+        let newlyDetected = currentRemoteIDs.subtracting(knownRemoteNodeIDs)
+        if !newlyDetected.isEmpty {
+            for host in DiscoveryManager.shared.discovered where newlyDetected.contains(host.id) {
+                AppNotifications.shared.notify(
+                    title: "Remote Node Detected",
+                    body: "\(host.name) has been detected on your cluster network."
+                )
+            }
+        }
+        knownRemoteNodeIDs = currentRemoteIDs
     }
     
     private func updateDetectedIPAddress(for vm: VirtualMachine) {
@@ -793,6 +1169,13 @@ class VMManager {
         vm.userInitiatedStop = true
         try await vm.vzVirtualMachine?.stop()
         vm.state = .stopped
+        vm.guestCPUUsagePercent = 0
+        vm.guestMemoryUsagePercent = 0
+        vm.guestDiskUsagePercent = 0
+        vm.hasGuestUsageSample = false
+        vm.lastGuestCPUTotalTicks = nil
+        vm.lastGuestCPUIdleTicks = nil
+        vm.lastMonitoredProcessTicks = nil
         serialReadPipes[vm.id]?.fileHandleForReading.readabilityHandler = nil
         try? serialReadPipes[vm.id]?.fileHandleForReading.close()
         try? vm.serialWritePipe?.fileHandleForWriting.close()

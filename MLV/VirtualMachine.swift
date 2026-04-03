@@ -93,6 +93,18 @@ class VirtualMachine: Identifiable {
         didSet { persist() }
     }
 
+    var secondaryNetworkEnabled: Bool = false {
+        didSet { persist() }
+    }
+
+    var secondaryNetworkMode: VMNetworkMode = .nat {
+        didSet { persist() }
+    }
+
+    var secondaryBridgeInterfaceName: String? = nil {
+        didSet { persist() }
+    }
+
     var clusterRole: VMClusterRole = .node {
         didSet { persist() }
     }
@@ -179,17 +191,40 @@ class VirtualMachine: Identifiable {
         let ram: String
         let namespace: String
     }
+
+    struct Container: Identifiable {
+        let id = UUID()
+        let name: String
+        let image: String
+        let status: String
+        let runtime: String
+    }
     
     var deploymentLogs: [DeploymentLog] = []
     var deploymentProgress: Double = 0.0 // 0.0 to 1.0
     var needsUserInteraction: Bool = false
     var pods: [Pod] = []
+    var containers: [Container] = []
     var downloadTask: Task<Void, Error>?
     var downloadPercent: Int = 0
     var downloadSpeedMBps: Double = 0
     var downloadETASeconds: Int = 0
     var pendingAutoStartAfterInstall: Bool = false
     var userInitiatedStop: Bool = false
+    var guestCPUUsagePercent: Int = 0
+    var guestMemoryUsagePercent: Int = 0
+    var guestDiskUsagePercent: Int = 0
+    var monitoredProcessPID: Int = 1 {
+        didSet { persist() }
+    }
+    var monitoredProcessName: String = "" {
+        didSet { persist() }
+    }
+    var hasGuestUsageSample: Bool = false
+    var lastGuestCPUTotalTicks: UInt64? = nil
+    var lastGuestCPUIdleTicks: UInt64? = nil
+    var lastMonitoredProcessTicks: UInt64? = nil
+    var hostServicePID: Int? = nil
     
     // Networking Info
     var ipAddress: String = "Detecting..."
@@ -292,6 +327,13 @@ class VirtualMachine: Identifiable {
         lastHealthyPoll = nil
         isConnected = false
         ipAddress = "Detecting..."
+        guestCPUUsagePercent = 0
+        guestMemoryUsagePercent = 0
+        guestDiskUsagePercent = 0
+        hasGuestUsageSample = false
+        lastGuestCPUTotalTicks = nil
+        lastGuestCPUIdleTicks = nil
+        lastMonitoredProcessTicks = nil
     }
     
     init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramGB: Int = 4, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {

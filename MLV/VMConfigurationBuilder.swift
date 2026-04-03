@@ -88,46 +88,30 @@ class VMConfigurationBuilder {
         config.storageDevices = storageDevices
         
         // 3. Network
-        let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        
-        if vm.networkMode == .bridge, let interfaceName = vm.bridgeInterfaceName {
-            if EntitlementChecker.hasEntitlement("com.apple.vm.networking") {
-                let interfaces = VZBridgedNetworkInterface.networkInterfaces
-                if let interface = interfaces.first(where: { $0.identifier == interfaceName }) {
-                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: interface)
-                    print("[VMConfigBuilder] Using BRIDGED networking on \(interfaceName)")
-                } else if let first = interfaces.first {
-                    networkDevice.attachment = VZBridgedNetworkDeviceAttachment(interface: first)
-                    vm.bridgeInterfaceName = first.identifier
-                    print("[VMConfigBuilder] Bridge '\(interfaceName)' not found, using '\(first.identifier)'")
-                } else {
-                    vm.networkMode = .nat
-                    networkDevice.attachment = VZNATNetworkDeviceAttachment()
-                    print("[VMConfigBuilder] No bridge interfaces available, falling back to NAT")
-                }
-            } else {
-                vm.networkMode = .nat
-                networkDevice.attachment = VZNATNetworkDeviceAttachment()
-                print("[VMConfigBuilder] Missing entitlement for bridged networking, using NAT")
-            }
-        } else {
-            networkDevice.attachment = VZNATNetworkDeviceAttachment()
-            vm.networkMode = .nat
-            print("[VMConfigBuilder] Using NAT networking")
+        var networkDevices: [VZNetworkDeviceConfiguration] = []
+
+        let primaryDevice = VZVirtioNetworkDeviceConfiguration()
+        primaryDevice.attachment = resolvedAttachment(
+            mode: vm.networkMode,
+            bridgeInterfaceName: vm.bridgeInterfaceName,
+            vm: vm,
+            updateBridgeName: { vm.bridgeInterfaceName = $0 }
+        )
+        applyPersistentMAC(to: primaryDevice, at: vmDir.appendingPathComponent("mac-address.txt"))
+        networkDevices.append(primaryDevice)
+
+        if vm.secondaryNetworkEnabled {
+            let secondaryDevice = VZVirtioNetworkDeviceConfiguration()
+            secondaryDevice.attachment = resolvedAttachment(
+                mode: vm.secondaryNetworkMode,
+                bridgeInterfaceName: vm.secondaryBridgeInterfaceName,
+                vm: vm,
+                updateBridgeName: { vm.secondaryBridgeInterfaceName = $0 }
+            )
+            applyPersistentMAC(to: secondaryDevice, at: vmDir.appendingPathComponent("mac-address-2.txt"))
+            networkDevices.append(secondaryDevice)
         }
-        
-        // Restore persistent MAC address if available
-        let macURL = vmDir.appendingPathComponent("mac-address.txt")
-        if let macString = try? String(contentsOf: macURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-           let mac = VZMACAddress(string: macString) {
-            networkDevice.macAddress = mac
-        } else {
-            // Generate and save a new MAC
-            let mac = VZMACAddress.randomLocallyAdministered()
-            try? mac.string.write(to: macURL, atomically: true, encoding: .utf8)
-            networkDevice.macAddress = mac
-        }
-        config.networkDevices = [networkDevice]
+        config.networkDevices = networkDevices
         
         // 4. Console, Graphics, Input, etc.
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
@@ -156,5 +140,36 @@ class VMConfigurationBuilder {
         
         return config
     }
-    
+
+    private func resolvedAttachment(
+        mode: VMNetworkMode,
+        bridgeInterfaceName: String?,
+        vm: VirtualMachine,
+        updateBridgeName: (String?) -> Void
+    ) -> VZNetworkDeviceAttachment {
+        if mode == .bridge, let interfaceName = bridgeInterfaceName {
+            if EntitlementChecker.hasEntitlement("com.apple.vm.networking") {
+                let interfaces = VZBridgedNetworkInterface.networkInterfaces
+                if let interface = interfaces.first(where: { $0.identifier == interfaceName }) {
+                    return VZBridgedNetworkDeviceAttachment(interface: interface)
+                }
+                if let first = interfaces.first {
+                    updateBridgeName(first.identifier)
+                    return VZBridgedNetworkDeviceAttachment(interface: first)
+                }
+            }
+        }
+        return VZNATNetworkDeviceAttachment()
+    }
+
+    private func applyPersistentMAC(to device: VZVirtioNetworkDeviceConfiguration, at url: URL) {
+        if let macString = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let mac = VZMACAddress(string: macString) {
+            device.macAddress = mac
+        } else {
+            let mac = VZMACAddress.randomLocallyAdministered()
+            try? mac.string.write(to: url, atomically: true, encoding: .utf8)
+            device.macAddress = mac
+        }
+    }
 }

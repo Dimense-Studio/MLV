@@ -15,6 +15,9 @@ struct VMMetadata: Codable {
     let isInstalled: Bool
     let networkMode: String?
     let bridgeInterfaceName: String?
+    let secondaryNetworkEnabled: Bool?
+    let secondaryNetworkMode: String?
+    let secondaryBridgeInterfaceName: String?
     let clusterRole: String?
     let wgControlPrivateKeyBase64: String?
     let wgControlPublicKeyBase64: String?
@@ -28,6 +31,8 @@ struct VMMetadata: Codable {
     let wgDataHostForwardPort: Int?
     let autoStartOnLaunch: Bool?
     let terminalConsoleHostPort: Int?
+    let monitoredProcessPID: Int?
+    let monitoredProcessName: String?
     
     init(
         id: UUID,
@@ -44,6 +49,9 @@ struct VMMetadata: Codable {
         isInstalled: Bool,
         networkMode: String?,
         bridgeInterfaceName: String?,
+        secondaryNetworkEnabled: Bool?,
+        secondaryNetworkMode: String?,
+        secondaryBridgeInterfaceName: String?,
         clusterRole: String?,
         wgControlPrivateKeyBase64: String?,
         wgControlPublicKeyBase64: String?,
@@ -56,7 +64,9 @@ struct VMMetadata: Codable {
         wgDataListenPort: Int?,
         wgDataHostForwardPort: Int?,
         autoStartOnLaunch: Bool?,
-        terminalConsoleHostPort: Int?
+        terminalConsoleHostPort: Int?,
+        monitoredProcessPID: Int?,
+        monitoredProcessName: String?
     ) {
         self.id = id
         self.name = name
@@ -72,6 +82,9 @@ struct VMMetadata: Codable {
         self.isInstalled = isInstalled
         self.networkMode = networkMode
         self.bridgeInterfaceName = bridgeInterfaceName
+        self.secondaryNetworkEnabled = secondaryNetworkEnabled
+        self.secondaryNetworkMode = secondaryNetworkMode
+        self.secondaryBridgeInterfaceName = secondaryBridgeInterfaceName
         self.clusterRole = clusterRole
         self.wgControlPrivateKeyBase64 = wgControlPrivateKeyBase64
         self.wgControlPublicKeyBase64 = wgControlPublicKeyBase64
@@ -85,6 +98,8 @@ struct VMMetadata: Codable {
         self.wgDataHostForwardPort = wgDataHostForwardPort
         self.autoStartOnLaunch = autoStartOnLaunch
         self.terminalConsoleHostPort = terminalConsoleHostPort
+        self.monitoredProcessPID = monitoredProcessPID
+        self.monitoredProcessName = monitoredProcessName
     }
 }
 
@@ -120,6 +135,9 @@ class VMStatePersistence {
                     isInstalled: vm.isInstalled,
                     networkMode: vm.networkMode.rawValue,
                     bridgeInterfaceName: vm.bridgeInterfaceName,
+                    secondaryNetworkEnabled: vm.secondaryNetworkEnabled,
+                    secondaryNetworkMode: vm.secondaryNetworkMode.rawValue,
+                    secondaryBridgeInterfaceName: vm.secondaryBridgeInterfaceName,
                     clusterRole: vm.clusterRole.rawValue,
                     wgControlPrivateKeyBase64: vm.wgControlPrivateKeyBase64,
                     wgControlPublicKeyBase64: vm.wgControlPublicKeyBase64,
@@ -132,7 +150,9 @@ class VMStatePersistence {
                     wgDataListenPort: vm.wgDataListenPort,
                     wgDataHostForwardPort: vm.wgDataHostForwardPort,
                     autoStartOnLaunch: vm.autoStartOnLaunch,
-                    terminalConsoleHostPort: vm.terminalConsoleHostPort
+                    terminalConsoleHostPort: vm.terminalConsoleHostPort,
+                    monitoredProcessPID: vm.monitoredProcessPID,
+                    monitoredProcessName: vm.monitoredProcessName
                 )
             }
             do {

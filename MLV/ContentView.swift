@@ -12,8 +12,62 @@ import Virtualization   // For Linux VMs
 import AppKit
 
 extension UTType {
-    /// Uniform Type for ISO disk images (by filename extension)
     static var iso: UTType { UTType(filenameExtension: "iso") ?? .data }
+}
+
+enum DashboardPalette {
+    static let surface = Color(red: 0.04, green: 0.05, blue: 0.07)
+    static let panel = Color(red: 0.06, green: 0.07, blue: 0.10)
+    static let panelAlt = Color(red: 0.08, green: 0.09, blue: 0.13)
+    static let border = Color.white.opacity(0.07)
+    static let textSecondary = Color.white.opacity(0.62)
+    static let accentPurple = Color(red: 0.58, green: 0.33, blue: 0.90)
+    static let accentCyan = Color(red: 0.15, green: 0.72, blue: 0.82)
+    static let accentGreen = Color(red: 0.09, green: 0.78, blue: 0.52)
+}
+
+struct DashboardPanel<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(14)
+            .background(DashboardPalette.panel)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(DashboardPalette.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct DashboardMetricTile: View {
+    let icon: String
+    let title: String
+    let value: String
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(accent)
+                Text(title)
+                    .foregroundStyle(DashboardPalette.textSecondary)
+                    .font(.system(size: 13, weight: .medium))
+            }
+            Text(value)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
 }
 
 struct ContentView: View {
@@ -73,22 +127,40 @@ struct ContentView: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(DashboardPalette.surface)
         } detail: {
-            switch selectedTab {
-            case .vms:
-                VMListView()
-                    .navigationTitle("Virtual Machines")
-            case .pods:
-                PodsListView()
-                    .navigationTitle("Kubernetes Pods")
-            case .storage:
-                StorageListView()
-                    .navigationTitle("Distributed Storage")
-            case .network:
-                NetworkListView()
-                    .navigationTitle("Network Topology")
+            Group {
+                switch selectedTab {
+                case .vms:
+                    VMListView()
+                        .navigationTitle("Virtual Machines")
+                case .pods:
+                    PodsListView()
+                        .navigationTitle("Kubernetes Pods")
+                case .storage:
+                    StorageListView()
+                        .navigationTitle("Distributed Storage")
+                case .network:
+                    NetworkListView()
+                        .navigationTitle("Network Topology")
+                }
             }
+            .background(
+                LinearGradient(
+                    colors: [DashboardPalette.surface, Color.black],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
         }
+        .background(
+            LinearGradient(
+                colors: [Color.black, DashboardPalette.surface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .fileImporter(
             isPresented: $showingISOImporter,
             allowedContentTypes: [.iso],
@@ -111,6 +183,12 @@ struct ContentView: View {
         } message: { error in
             Text(error)
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenVMConsoleWindow"))) { note in
+            if let id = note.object as? UUID {
+                openWindow(id: "console", value: id)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 }
 
@@ -119,71 +197,102 @@ struct ContentView: View {
 
 struct VMListView: View {
     @State private var showingConfigForm = false
-    @State private var selectedVMID: UUID? = nil
+    @State private var editingVM: VirtualMachine? = nil
+    @State private var showingEditForm = false
     @State private var search: String = ""
     
     var body: some View {
         let all = VMManager.shared.virtualMachines
         let filtered = all.filter { search.isEmpty ? true : $0.name.localizedCaseInsensitiveContains(search) }
-        let selectedVM = filtered.first(where: { $0.id == selectedVMID }) ?? filtered.first
+        let runningCount = all.filter(\.state.isRunning).count
+        let runningVMs = filtered.filter(\.state.isRunning)
+        let sampledCPU = runningVMs.map(\.liveCPUUsagePercent).filter { $0 >= 0 }
+        let sampledMemory = runningVMs.map(\.liveMemoryUsagePercent).filter { $0 >= 0 }
+        let averageCPUUsage = sampledCPU.isEmpty ? 0 : sampledCPU.reduce(0, +) / sampledCPU.count
+        let averageMemoryUsage = sampledMemory.isEmpty ? 0 : sampledMemory.reduce(0, +) / sampledMemory.count
+        let allOperational = !all.isEmpty && runningCount == all.count
         
-        return HSplitView {
-            List(selection: $selectedVMID) {
-                if filtered.isEmpty {
-                    ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("Try a different search"))
-                } else {
-                    ForEach(filtered) { vm in
-                        VMRowCompact(vm: vm)
-                            .tag(vm.id)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(allOperational ? DashboardPalette.accentGreen : Color.orange)
+                            .frame(width: 11, height: 11)
+                        Text(allOperational ? "All systems operational" : "Cluster needs attention")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        Spacer()
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .background(DashboardPalette.panel)
+
+                    HStack(spacing: 0) {
+                        DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(averageCPUUsage)%", accent: DashboardPalette.accentPurple)
+                        Divider().opacity(0.07)
+                        DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(averageMemoryUsage)%", accent: DashboardPalette.accentPurple)
+                        Divider().opacity(0.07)
+                        DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(all.count)", accent: DashboardPalette.accentPurple)
+                        Divider().opacity(0.07)
+                        DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(runningCount)", accent: DashboardPalette.accentPurple)
+                    }
+                    .frame(height: 124)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.44))
+
+                    VStack(spacing: 12) {
+                        if filtered.isEmpty {
+                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
+                                .padding(.vertical, 36)
+                        } else {
+                            ForEach(filtered) { vm in
+                                VMRowCompact(vm: vm, onDoubleClick: { vm in
+                                    NSApp.activate(ignoringOtherApps: true)
+                                    NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
+                                }, onEdit: { vm in
+                                    editingVM = vm
+                                    showingEditForm = true
+                                })
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.black.opacity(0.62))
                 }
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
             }
-            .listStyle(.inset)
-            .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
-            
-            Group {
-                if let selectedVM {
-                    VMInspector(vm: selectedVM)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                } else {
-                    ContentUnavailableView("Select a VM", systemImage: "macwindow", description: Text("Choose a VM from the list to view details"))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
+            .padding(16)
         }
+        .scrollIndicators(.hidden)
+        .background(DashboardPalette.surface)
         .searchable(text: $search)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showingConfigForm = true
                 } label: {
-                    Label("Deploy", systemImage: "plus")
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .frame(width: 24, height: 24)
                 }
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Text("\(all.count) total • \(all.filter(\.state.isRunning).count) running • \(HostResources.cpuCount)C • \(HostResources.totalMemoryGB)G • \(HostResources.freeDiskSpaceGB)G free")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.borderless)
+                .help("Add Node")
             }
         }
         .sheet(isPresented: $showingConfigForm) {
-            VMConfigForm(isPresented: $showingConfigForm)
+            VMConfigForm(isPresented: $showingConfigForm, vmToEdit: nil)
         }
-        .onAppear {
-            if selectedVMID == nil {
-                selectedVMID = filtered.first?.id
-            }
-        }
-        .onChange(of: search) {
-            if selectedVMID == nil || !filtered.contains(where: { $0.id == selectedVMID }) {
-                selectedVMID = filtered.first?.id
-            }
-        }
-        .onChange(of: all.count) {
-            if selectedVMID == nil {
-                selectedVMID = filtered.first?.id
+        .sheet(isPresented: $showingEditForm, onDismiss: {
+            editingVM = nil
+        }) {
+            if let vm = editingVM {
+                VMConfigForm(isPresented: $showingEditForm, vmToEdit: vm)
             }
         }
     }
@@ -215,45 +324,176 @@ struct HostMetricChip: View {
 
 struct VMRowCompact: View {
     let vm: VirtualMachine
+    let onDoubleClick: ((VirtualMachine) -> Void)?
+    let onEdit: ((VirtualMachine) -> Void)?
+    
+    init(vm: VirtualMachine, onDoubleClick: ((VirtualMachine) -> Void)? = nil, onEdit: ((VirtualMachine) -> Void)? = nil) {
+        self.vm = vm
+        self.onDoubleClick = onDoubleClick
+        self.onEdit = onEdit
+    }
+    
+    @State private var showContextDeleteConfirm = false
     
     var body: some View {
-        HStack(spacing: 10) {
-            StatusBadge(state: vm.state)
-            
+        HStack(spacing: 14) {
+            Circle()
+                .fill(statusDotColor)
+                .frame(width: 11, height: 11)
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(vm.name)
-                        .font(.body)
+                        .font(.system(size: 20, weight: .medium))
                         .lineLimit(1)
-                    
+
                     if vm.isMaster {
                         Text("Master")
-                            .font(.caption2)
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())
                     }
-                    
+
                     Text(vm.selectedDistro.shortLabel)
-                        .font(.caption2)
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                
+
                 Text(vm.ipAddress)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            
+
             Spacer()
-            
-            Text("\(vm.cpuCount)C  \(vm.memorySizeGB)G")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
+
+            HStack(spacing: 18) {
+                VMUsageMeter(label: "CPU", value: vm.liveCPUUsagePercent, tint: DashboardPalette.accentPurple, estimated: vm.cpuUsageIsEstimated)
+                VMUsageMeter(label: "MEM", value: vm.liveMemoryUsagePercent, tint: DashboardPalette.accentCyan, estimated: vm.memoryUsageIsEstimated)
+            }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .background(Color.black.opacity(0.55))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.03), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .onTapGesture(count: 2) {
+            if vm.state.isRunning {
+                onDoubleClick?(vm)
+            }
+        }
+        .contextMenu {
+            Button {
+                onEdit?(vm)
+            } label: { Label("Edit VM", systemImage: "slider.horizontal.3") }
+            Divider()
+            if vm.state == .stopped {
+                Button {
+                    Task { try? await VMManager.shared.startVM(vm) }
+                } label: { Label("Start", systemImage: "play.fill") }
+            } else {
+                Button {
+                    Task { try? await VMManager.shared.stopVM(vm) }
+                } label: { Label("Stop", systemImage: "power") }
+                Button {
+                    Task { try? await VMManager.shared.restartVM(vm) }
+                } label: { Label("Restart", systemImage: "arrow.clockwise") }
+            }
+            Divider()
+            Button {
+                VMManager.shared.openVMFolder(vm)
+            } label: { Label("Open Files", systemImage: "folder") }
+            Divider()
+            Toggle(isOn: Binding(get: { vm.autoStartOnLaunch }, set: { vm.autoStartOnLaunch = $0 })) {
+                Label("Autostart", systemImage: "bolt")
+            }
+            Divider()
+            Button(role: .destructive) {
+                showContextDeleteConfirm = true
+            } label: { Label("Delete VM and Disks…", systemImage: "trash") }
+        }
+        .confirmationDialog(
+            "Delete \(vm.name)?",
+            isPresented: $showContextDeleteConfirm
+        ) {
+            Button("Delete VM and all Disks", role: .destructive) {
+                VMManager.shared.removeVM(vm)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will permanently delete the virtual machine and all associated disk images !")
+        }
     }
+
+    private var statusDotColor: Color {
+        switch vm.state {
+        case .running:
+            return DashboardPalette.accentGreen
+        case .starting:
+            return .yellow
+        case .error:
+            return .red
+        case .paused:
+            return .orange
+        case .stopped:
+            return .gray
+        }
+    }
+}
+
+private struct VMUsageMeter: View {
+    let label: String
+    let value: Int
+    let tint: Color
+    let estimated: Bool
+
+    var body: some View {
+        let isAvailable = value >= 0
+        let safeValue = max(0, value)
+        HStack(spacing: 8) {
+            Text(estimated ? "\(label)~" : label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DashboardPalette.textSecondary)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.10))
+                    .frame(width: 130, height: 8)
+                Capsule()
+                    .fill(isAvailable ? tint : Color.white.opacity(0.18))
+                    .frame(width: isAvailable ? max(8, 130 * CGFloat(min(max(safeValue, 0), 100)) / 100) : 0, height: 8)
+            }
+            Text(isAvailable ? "\(safeValue)%" : "--")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(DashboardPalette.textSecondary)
+                .frame(width: 40, alignment: .trailing)
+        }
+    }
+}
+
+private extension VirtualMachine {
+    var liveCPUUsagePercent: Int {
+        guard state.isRunning else { return 0 }
+        return hasGuestUsageSample ? guestCPUUsagePercent : -1
+    }
+
+    var liveMemoryUsagePercent: Int {
+        guard state.isRunning else { return 0 }
+        return hasGuestUsageSample ? guestMemoryUsagePercent : -1
+    }
+
+    var cpuUsageIsEstimated: Bool {
+        state.isRunning && !hasGuestUsageSample && !isInstalled
+    }
+
+    var memoryUsageIsEstimated: Bool {
+        state.isRunning && !hasGuestUsageSample && !isInstalled
+    }
+
 }
 
 struct VMInspector: View {
@@ -261,109 +501,7 @@ struct VMInspector: View {
     @Environment(\.openWindow) private var openWindow
     
     var body: some View {
-        Form {
-            Section {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(vm.name)
-                            .font(.title3.weight(.semibold))
-                        Text(vm.stage.rawValue)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    StatusBadge(state: vm.state)
-                }
-                Toggle("Autostart", isOn: Binding(get: { vm.autoStartOnLaunch }, set: { vm.autoStartOnLaunch = $0 }))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            
-            Section {
-                HStack(spacing: 8) {
-                    Button {
-                        Task { try? await VMManager.shared.startVM(vm) }
-                    } label: {
-                        Label(vm.isInstalled ? "Start" : "Deploy", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(vm.state != .stopped)
-                    
-                    Button {
-                        Task { try? await VMManager.shared.stopVM(vm) }
-                    } label: {
-                        Label("Stop", systemImage: "power")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!vm.state.isRunning)
-                    
-                    Button {
-                        Task { try? await VMManager.shared.restartVM(vm) }
-                    } label: {
-                        Label("Restart", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!vm.state.isRunning)
-                    
-                    Spacer()
-                    
-                    Button {
-                        openWindow(id: "console", value: vm.id)
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Label("Console", systemImage: "display")
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    Button {
-                        VMManager.shared.openVMFolder(vm)
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            
-            Section("Resources") {
-                LabeledContent("CPU", value: "\(vm.cpuCount)")
-                LabeledContent("RAM", value: "\(vm.memorySizeGB) GB")
-                LabeledContent("System Disk", value: "\(vm.systemDiskSizeGB) GB")
-                LabeledContent("Data Disk", value: "\(vm.dataDiskSizeGB) GB")
-            }
-            
-            Section("Networking") {
-                LabeledContent("Mode", value: vm.networkMode.rawValue)
-                LabeledContent("IP", value: vm.ipAddress)
-                    .textSelection(.enabled)
-                LabeledContent("Gateway", value: vm.gateway)
-                    .textSelection(.enabled)
-            }
-            
-            Section("Events") {
-                if vm.deploymentLogs.isEmpty {
-                    Text("No events yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(vm.deploymentLogs.suffix(50)) { log in
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle()
-                                .fill(log.isError ? Color.red : Color.secondary.opacity(0.5))
-                                .frame(width: 6, height: 6)
-                                .padding(.top, 5)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(log.message)
-                                    .foregroundStyle(log.isError ? Color.red : Color.primary)
-                                Text(log.timestamp.formatted(date: .omitted, time: .standard))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
+        ContentUnavailableView("Controls Moved", systemImage: "cursorarrow.click", description: Text("Use right-click on a VM to manage it."))
     }
 }
 
@@ -444,23 +582,6 @@ struct VMCard: View {
                         .controlSize(.small)
                         .labelsHidden()
                         .help("Start VM automatically when MLV launches")
-                    Button {
-                        openWindow(id: "console", value: vm.id)
-                        NSApp.activate(ignoringOtherApps: true)
-                    } label: {
-                        Image(systemName: "display")
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open GUI console")
-                    Button {
-                        showingDeleteConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .foregroundStyle(.red)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete VM and Disks")
-                    
                     StatusBadge(state: vm.state)
                 }
             }
@@ -492,95 +613,9 @@ struct VMCard: View {
             Divider().opacity(0.1)
             
             HStack(spacing: 12) {
-                if vm.state == .stopped {
-                    Button {
-                        Task { try? await VMManager.shared.startVM(vm) }
-                    } label: {
-                        Label(vm.isInstalled ? "Start" : "Deploy", systemImage: vm.isInstalled ? "play.fill" : "cloud.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else if case .error(let msg) = vm.state {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Deployment Failed")
-                            .font(.caption.bold())
-                            .foregroundStyle(.red)
-                        Text(msg)
-                            .font(.system(size: 8))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    
-                    Spacer()
-                    
-                    if vm.downloadTask != nil {
-                        Button {
-                            Task { try? await VMManager.shared.stopVM(vm) }
-                        } label: {
-                            Label("Cancel Download", systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    
-                    Button {
-                        Task { try? await VMManager.shared.startVM(vm) }
-                    } label: {
-                        Label("Retry", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else if vm.downloadTask != nil {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Downloading ISO...")
-                            .font(.caption.bold())
-                            .foregroundStyle(.blue)
-                        ProgressView(value: Double(vm.downloadPercent), total: 100.0)
-                            .progressViewStyle(.linear)
-                            .tint(.blue)
-                        Text("\(vm.downloadPercent)% • \(vm.downloadSpeedMBps, specifier: "%.1f") MB/s • ETA \(vm.downloadETASeconds / 60)m \(vm.downloadETASeconds % 60)s")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Button {
-                        Task { try? await VMManager.shared.stopVM(vm) }
-                    } label: {
-                        Label("Cancel", systemImage: "xmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Group {
-                        Button {
-                            Task { try? await VMManager.shared.stopVM(vm) }
-                        } label: {
-                            Image(systemName: "power")
-                        }
-                        .help("Power Off")
-                        
-                        Button {
-                            Task { try? await VMManager.shared.restartVM(vm) }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .help("Restart")
-                        
-                        Button {
-                            VMManager.shared.openVMFolder(vm)
-                        } label: {
-                            Image(systemName: "folder")
-                        }
-                        .help("Open VM Files")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    
-                    Spacer()
-                }
+                Text("Use right-click on the VM in the list to control it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .controlSize(.regular)
         }
@@ -588,14 +623,6 @@ struct VMCard: View {
         .background(
             DarkGlassBackground(cornerRadius: 16)
         )
-        .confirmationDialog("Are you sure?", isPresented: $showingDeleteConfirmation) {
-            Button("Delete VM and all Disks", role: .destructive) {
-                VMManager.shared.removeVM(vm)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will permanently delete the virtual machine and all associated disk images (system.img and data.img).")
-        }
     }
 }
 
@@ -610,16 +637,36 @@ struct PodsListView: View {
                 List {
                     ForEach(running) { vm in
                         Section {
-                            if vm.pods.isEmpty {
+                            if vm.pods.isEmpty && vm.containers.isEmpty {
                                 HStack(spacing: 8) {
                                     ProgressView()
                                         .controlSize(.small)
-                                    Text("Detecting pods…")
+                                    Text("Detecting workloads…")
                                         .foregroundStyle(.secondary)
                                 }
-                            } else {
+                            }
+
+                            if !vm.pods.isEmpty {
+                                Text("Kubernetes Pods")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
                                 ForEach(vm.pods) { pod in
                                     PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
+                                }
+                            }
+
+                            if !vm.containers.isEmpty {
+                                Text("Docker Containers")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, vm.pods.isEmpty ? 0 : 8)
+                                ForEach(vm.containers) { container in
+                                    ContainerRow(
+                                        name: container.name,
+                                        image: container.image,
+                                        status: container.status,
+                                        runtime: container.runtime
+                                    )
                                 }
                             }
                         } header: {
@@ -629,9 +676,12 @@ struct PodsListView: View {
                                 StatusBadge(state: vm.state)
                             }
                         }
+                        .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(DashboardPalette.surface)
             }
         }
     }
@@ -681,7 +731,65 @@ struct PodRow: View {
             }
             .menuStyle(.borderlessButton)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(DashboardPalette.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(DashboardPalette.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct ContainerRow: View {
+    let name: String
+    let image: String
+    let status: String
+    let runtime: String
+
+    private var statusColor: Color {
+        if status.localizedCaseInsensitiveContains("up") || status.localizedCaseInsensitiveContains("running") {
+            return .green
+        }
+        if status.localizedCaseInsensitiveContains("created") || status.localizedCaseInsensitiveContains("restarting") {
+            return .orange
+        }
+        return .red
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(.body, design: .monospaced))
+                    .lineLimit(1)
+                Text("\(runtime) • \(status)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(image)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: 220, alignment: .trailing)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(DashboardPalette.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(DashboardPalette.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -722,9 +830,12 @@ struct StorageListView: View {
                                 StatusBadge(state: vm.state)
                             }
                         }
+                        .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(DashboardPalette.surface)
             }
         }
     }
@@ -752,7 +863,14 @@ struct StorageFileRow: View {
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(DashboardPalette.panel)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(DashboardPalette.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -770,8 +888,11 @@ struct NetworkListView: View {
                         .textSelection(.enabled)
                 }
                 
-                LabeledContent("Listen Port", value: "\(WireGuardManager.shared.listenPort)")
-                    .textSelection(.enabled)
+                LabeledContent("Listen Port") {
+                    Text("\(WireGuardManager.shared.listenPort)")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
                 
                 HStack(spacing: 8) {
                     Button("Copy Config") { WireGuardManager.shared.copyConfigToClipboard() }
@@ -876,6 +997,8 @@ struct NetworkListView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(DashboardPalette.surface)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(showConfig ? "Hide Config" : "Show Config") {
@@ -972,7 +1095,9 @@ struct StatusBadge: View {
 }
 
 struct VMConfigForm: View {
+    @Environment(\.dismiss) private var dismiss
     @Binding var isPresented: Bool
+    let vmToEdit: VirtualMachine?
     
     @State private var vmName: String = ""
     @State private var cpuCount: Int = 4
@@ -988,157 +1113,305 @@ struct VMConfigForm: View {
     // Added network mode and bridge interface selection states
     @State private var selectedNetworkMode: VMNetworkMode = .nat
     @State private var selectedBridgeName: String = ""
+    @State private var enableSecondaryNetwork: Bool = false
+    @State private var secondaryNetworkMode: VMNetworkMode = .nat
+    @State private var secondaryBridgeName: String = ""
     
     // Real Host Limits
     private let maxCores = max(1, HostResources.cpuCount - 2)
     private let maxRAM = max(2, HostResources.totalMemoryGB - 2)
     private let freeDisk = HostResources.freeDiskSpaceGB
     private let interfaces = HostResources.getNetworkInterfaces()
+    private var isEditing: Bool { vmToEdit != nil }
     
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Identity") {
-                    TextField("Node Name", text: $vmName)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                    
-                    Picker("Role", selection: $isMaster) {
-                        Text("Worker").tag(false)
-                        Text("Master").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                }
-                
-                Section("Distribution") {
-                    Picker("Linux", selection: $selectedDistro) {
-                        ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
-                            Text(distro.rawValue).tag(distro)
-                        }
-                    }
-                }
-                
-                Section("Resources") {
-                    Stepper(value: $cpuCount, in: 1...HostResources.cpuCount, step: 1) {
-                        HStack {
-                            Text("CPU")
-                            Spacer()
-                            Text("\(cpuCount)")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Identity")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            TextField("Node Name", text: $vmName)
+                                .textFieldStyle(.roundedBorder)
                                 .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(cpuCount > maxCores ? Color.red : Color.secondary)
+                                .disabled(isEditing)
+                            Picker("Role", selection: $isMaster) {
+                                Text("Worker").tag(false)
+                                Text("Master").tag(true)
+                            }
+                            .pickerStyle(.segmented)
                         }
                     }
-                    
-                    Stepper(value: $memoryGB, in: 2...HostResources.totalMemoryGB, step: 2) {
-                        HStack {
-                            Text("RAM")
-                            Spacer()
-                            Text("\(memoryGB) GB")
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(memoryGB > maxRAM ? Color.red : Color.secondary)
+
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Distribution")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            Picker("Linux", selection: $selectedDistro) {
+                                ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
+                                    Text(distro.rawValue).tag(distro)
+                                }
+                            }
                         }
                     }
-                    
-                    Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
-                        HStack {
-                            Text("System Disk")
-                            Spacer()
-                            Text("\(systemDiskGB) GB")
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
+
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Resources")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            Stepper(value: $cpuCount, in: 1...HostResources.cpuCount, step: 1) {
+                                HStack {
+                                    Text("CPU")
+                                    Spacer()
+                                    Text("\(cpuCount)")
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(cpuCount > maxCores ? Color.red : DashboardPalette.textSecondary)
+                                }
+                            }
+                            CapacityBar(title: "Host CPU Budget", used: cpuCount, total: HostResources.cpuCount)
+                            Stepper(value: $memoryGB, in: 2...HostResources.totalMemoryGB, step: 2) {
+                                HStack {
+                                    Text("RAM")
+                                    Spacer()
+                                    Text("\(memoryGB) GB")
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(memoryGB > maxRAM ? Color.red : DashboardPalette.textSecondary)
+                                }
+                            }
+                            CapacityBar(title: "Host RAM Budget", used: memoryGB, total: HostResources.totalMemoryGB)
+                            Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
+                                HStack {
+                                    Text("System Disk")
+                                    Spacer()
+                                    Text("\(systemDiskGB) GB")
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(DashboardPalette.textSecondary)
+                                }
+                            }
+                            CapacityBar(title: "Estimated Host Disk", used: systemDiskGB + (useDedicatedLonghornDisk ? dataDiskGB : 0), total: max(1, freeDisk))
                         }
                     }
-                }
-                
-                Section("Storage") {
-                    Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
-                    if useDedicatedLonghornDisk {
-                        Stepper(value: $dataDiskGB, in: 5...max(5, freeDisk - systemDiskGB - 10), step: 5) {
-                            HStack {
-                                Text("Longhorn Disk")
-                                Spacer()
-                                Text("\(dataDiskGB) GB")
-                                    .font(.system(.body, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Storage")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
+                            if useDedicatedLonghornDisk {
+                                let maxData = max(5, freeDisk - systemDiskGB - 10)
+                                Stepper(value: $dataDiskGB, in: 5...maxData, step: 5) {
+                                    HStack {
+                                        Text("Longhorn Disk")
+                                        Spacer()
+                                        Text("\(dataDiskGB) GB")
+                                            .font(.system(.body, design: .monospaced))
+                                            .foregroundStyle((systemDiskGB + dataDiskGB) > freeDisk ? Color.red : DashboardPalette.textSecondary)
+                                    }
+                                }
+                                CapacityBar(title: "Storage Pressure", used: systemDiskGB + dataDiskGB, total: max(1, freeDisk))
+                            }
+                        }
+                    }
+
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Networking")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            Picker("Mode", selection: $selectedNetworkMode) {
+                                ForEach(VMNetworkMode.allCases, id: \.self) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            if selectedNetworkMode == .bridge {
+                                Picker("Bridge Interface", selection: $selectedBridgeName) {
+                                    ForEach(interfaces, id: \.bsdName) { iface in
+                                        Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                    }
+                                }
+                            }
+                            Toggle("Enable Secondary Interface", isOn: $enableSecondaryNetwork)
+                            if enableSecondaryNetwork {
+                                Picker("Secondary Mode", selection: $secondaryNetworkMode) {
+                                    ForEach(VMNetworkMode.allCases, id: \.self) { mode in
+                                        Text(mode.rawValue).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                if secondaryNetworkMode == .bridge {
+                                    Picker("Secondary Bridge", selection: $secondaryBridgeName) {
+                                        ForEach(interfaces, id: \.bsdName) { iface in
+                                            Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                
-                Section("Networking") {
-                    Picker("Mode", selection: $selectedNetworkMode) {
-                        ForEach(VMNetworkMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    
-                    if selectedNetworkMode == .bridge {
-                        Picker("Bridge Interface", selection: $selectedBridgeName) {
-                            ForEach(interfaces, id: \.bsdName) { iface in
-                                Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
-                            }
-                        }
-                    }
-                }
+                .padding(16)
             }
-            .navigationTitle("Deploy Node")
+            .scrollContentBackground(.hidden)
+            .background(
+                LinearGradient(
+                    colors: [DashboardPalette.surface, Color.black],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .navigationTitle(isEditing ? "Edit Node" : "Deploy Node")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isPresented = false }
+                    Button("Cancel") { closeForm() }
                         .disabled(isDeploying)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        deploy()
+                        submit()
                     } label: {
                         if isDeploying {
                             ProgressView().controlSize(.small)
                         } else {
-                            Text("Deploy")
+                            Text(isEditing ? "Save" : "Deploy")
                         }
                     }
                     .disabled(isDeploying)
                 }
             }
         }
-        .frame(width: 480, height: 560)
+        .frame(width: 520, height: 600)
         .onAppear {
-            if vmName.isEmpty { vmName = "node-\(Int.random(in: 100...999))" }
+            if let vm = vmToEdit {
+                vmName = vm.name
+                cpuCount = vm.cpuCount
+                memoryGB = vm.memorySizeGB
+                systemDiskGB = vm.systemDiskSizeGB
+                dataDiskGB = vm.dataDiskSizeGB
+                useDedicatedLonghornDisk = vm.dataDiskSizeGB > 0
+                isMaster = vm.isMaster
+                selectedDistro = vm.selectedDistro
+                selectedNetworkMode = vm.networkMode
+                selectedBridgeName = vm.bridgeInterfaceName ?? selectedBridgeName
+                enableSecondaryNetwork = vm.secondaryNetworkEnabled
+                secondaryNetworkMode = vm.secondaryNetworkMode
+                secondaryBridgeName = vm.secondaryBridgeInterfaceName ?? secondaryBridgeName
+            } else if vmName.isEmpty {
+                vmName = "node-\(Int.random(in: 100...999))"
+            }
             if selectedBridgeName.isEmpty, let first = interfaces.first {
                 selectedBridgeName = first.bsdName
             }
+            if secondaryBridgeName.isEmpty, let first = interfaces.first {
+                secondaryBridgeName = first.bsdName
+            }
         }
-        .alert("Deploy failed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+        .alert(isEditing ? "Save failed" : "Deploy failed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
         }
     }
     
-    private func deploy() {
+    private func closeForm() {
+        isPresented = false
+        dismiss()
+    }
+
+    private func submit() {
         isDeploying = true
         Task {
             do {
-                let vm = try await VMManager.shared.createLinuxVM(
+                if let vm = vmToEdit {
+                    vm.cpuCount = cpuCount
+                    vm.memorySizeGB = memoryGB
+                    if vm.state == .stopped {
+                        vm.systemDiskSizeGB = systemDiskGB
+                        vm.dataDiskSizeGB = useDedicatedLonghornDisk ? dataDiskGB : 0
+                    }
+                    vm.isMaster = isMaster
+                    vm.selectedDistro = selectedDistro
+                    vm.networkMode = selectedNetworkMode
+                    vm.bridgeInterfaceName = selectedNetworkMode == .bridge ? selectedBridgeName : nil
+                    vm.secondaryNetworkEnabled = enableSecondaryNetwork
+                    vm.secondaryNetworkMode = secondaryNetworkMode
+                    vm.secondaryBridgeInterfaceName = (enableSecondaryNetwork && secondaryNetworkMode == .bridge) ? secondaryBridgeName : nil
+                    vm.monitoredProcessName = "mlv-" + vm.name
+                        .lowercased()
+                        .replacingOccurrences(of: " ", with: "-")
+                        .replacingOccurrences(of: "_", with: "-")
+                    vm.persist()
+                    isDeploying = false
+                    closeForm()
+                    return
+                }
+
+                _ = try await VMManager.shared.createLinuxVM(
                     name: vmName,
                     cpus: cpuCount,
                     ramGB: memoryGB,
                     sysDiskGB: systemDiskGB,
                     dataDiskGB: useDedicatedLonghornDisk ? dataDiskGB : 0,
                     isMaster: isMaster,
-                    distro: selectedDistro
+                    distro: selectedDistro,
+                    networkMode: selectedNetworkMode,
+                    bridgeInterfaceName: selectedBridgeName,
+                    secondaryNetworkEnabled: enableSecondaryNetwork,
+                    secondaryNetworkMode: secondaryNetworkMode,
+                    secondaryBridgeInterfaceName: secondaryBridgeName
                 )
                 
-                vm.networkMode = selectedNetworkMode
-                vm.bridgeInterfaceName = selectedNetworkMode == .bridge ? selectedBridgeName : nil
-                
                 isDeploying = false
-                isPresented = false
+                closeForm()
             } catch {
                 errorMessage = error.localizedDescription
                 isDeploying = false
             }
+        }
+    }
+}
+
+struct CapacityBar: View {
+    let title: String
+    let used: Int
+    let total: Int
+
+    private var ratio: Double {
+        guard total > 0 else { return 0 }
+        return min(1.0, max(0.0, Double(used) / Double(total)))
+    }
+
+    private var barColor: Color {
+        if ratio >= 0.9 { return .red }
+        if ratio >= 0.75 { return .orange }
+        return .green
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(used)/\(total)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(barColor)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.08))
+                    Capsule()
+                        .fill(barColor)
+                        .frame(width: max(6, geo.size.width * ratio))
+                }
+            }
+            .frame(height: 8)
         }
     }
 }
@@ -1254,10 +1527,3 @@ struct ConfigSlider: View {
         }
     }
 }
-
-// Assuming VMNetworkMode is defined somewhere like this:
-// enum VMNetworkMode: String, CaseIterable {
-//     case nat = "NAT"
-//     case bridge = "Bridge"
-// }
-// Note: VMManager.shared.createLinuxVM must be updated to accept networkMode: and bridgeInterfaceName: parameters.
