@@ -21,9 +21,9 @@ enum DashboardPalette {
     static let panelAlt = OverlayTheme.panelStrong
     static let border = OverlayTheme.border
     static let textSecondary = OverlayTheme.textSecondary
-    static let accentPurple = Color(red: 0.87, green: 0.87, blue: 0.90)
-    static let accentCyan = Color(red: 0.78, green: 0.80, blue: 0.84)
-    static let accentGreen = Color(red: 0.64, green: 0.84, blue: 0.71)
+    static let accentPrimary = Color.white.opacity(0.84)
+    static let accentSecondary = Color.white.opacity(0.68)
+    static let accentTertiary = Color.white.opacity(0.56)
 }
 
 struct DashboardPanel<Content: View>: View {
@@ -99,37 +99,39 @@ struct ContentView: View {
     @State private var showingISOImporter = false
     
     var body: some View {
-        NavigationSplitView {
-            OverlaySidebar(
-                selectedTab: $selectedTab,
-                isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
-                onAuthorizeISO: { showingISOImporter = true }
-            )
-            .padding(.vertical, 10)
-            .padding(.leading, 10)
-            .padding(.trailing, 4)
-        } detail: {
-            ZStack {
+        NavigationStack {
+            ZStack(alignment: .topLeading) {
                 OverlayCanvasBackground()
-                switch selectedTab {
-                case .vms:
-                    VMListView(search: searchText)
-                        .navigationTitle("Virtual Machines")
-                case .pods:
-                    PodsListView(search: searchText)
-                        .navigationTitle("Kubernetes Pods")
-                case .storage:
-                    StorageListView(search: searchText)
-                        .navigationTitle("Distributed Storage")
-                case .network:
-                    NetworkListView(search: searchText)
-                        .navigationTitle("Network Topology")
+                Group {
+                    switch selectedTab {
+                    case .vms:
+                        VMListView(search: searchText)
+                            .navigationTitle("Virtual Machines")
+                    case .pods:
+                        PodsListView(search: searchText)
+                            .navigationTitle("Kubernetes Pods")
+                    case .storage:
+                        StorageListView(search: searchText)
+                            .navigationTitle("Distributed Storage")
+                    case .network:
+                        NetworkListView(search: searchText)
+                            .navigationTitle("Network Topology")
+                    }
                 }
+                .padding(.leading, 64)
+                .padding(.top, 6)
+
+                OverlaySidebar(
+                    selectedTab: $selectedTab,
+                    isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
+                    onAuthorizeISO: { showingISOImporter = true }
+                )
+                .padding(.top, 10)
+                .padding(.leading, 10)
             }
             .searchable(text: $searchText)
             .animation(.easeInOut(duration: 0.22), value: selectedTab)
         }
-        .navigationSplitViewStyle(.balanced)
         .fileImporter(
             isPresented: $showingISOImporter,
             allowedContentTypes: [.iso],
@@ -245,44 +247,45 @@ private struct OverlaySidebar: View {
                     Button {
                         selectedTab = tab
                     } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: tab.icon)
-                                .frame(width: 18)
-                            Text(tab.rawValue)
-                                .lineLimit(1)
-                            Spacer()
-                        }
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(selectedTab == tab ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 11)
-                        .overlay(alignment: .leading) {
-                            Capsule(style: .continuous)
-                                .fill(OverlayTheme.accent)
-                                .frame(width: 3, height: 18)
-                                .opacity(selectedTab == tab ? 0.9 : 0)
-                        }
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(selectedTab == tab ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                            .frame(width: 34, height: 34)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(selectedTab == tab ? Color.black.opacity(0.95) : Color.black.opacity(0.88))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color.white.opacity(selectedTab == tab ? 0.24 : 0.10), lineWidth: 1)
+                            )
                     }
                     .buttonStyle(.plain)
+                    .help(tab.rawValue)
                 }
             }
 
             Button(action: onAuthorizeISO) {
-                HStack(spacing: 10) {
-                    Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
-                    Text(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
-                    Spacer()
-                }
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.black.opacity(0.9))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.white.opacity(isISOAuthorized ? 0.22 : 0.10), lineWidth: 1)
+                    )
             }
             .buttonStyle(.plain)
+            .help(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
 
             Spacer(minLength: 0)
         }
         .padding(14)
+        .background(Color.clear)
     }
 }
 
@@ -304,7 +307,7 @@ struct VMListView: View {
                     VStack(spacing: 0) {
                         HStack(spacing: 10) {
                             Circle()
-                                .fill(snapshot.allOperational ? DashboardPalette.accentGreen : Color.orange)
+                                .fill(snapshot.allOperational ? DashboardPalette.accentPrimary : DashboardPalette.accentTertiary)
                                 .frame(width: 11, height: 11)
                             Text(snapshot.allOperational ? "All systems operational" : "Cluster needs attention")
                                 .font(.system(size: 13, weight: .medium))
@@ -316,17 +319,17 @@ struct VMListView: View {
                         .background(DashboardPalette.panel)
 
                         HStack(spacing: 0) {
-                            DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(snapshot.averageCPUUsage)%", accent: DashboardPalette.accentPurple)
+                            DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(snapshot.averageCPUUsage)%", accent: DashboardPalette.accentPrimary)
                             Divider().opacity(0.07)
-                            DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(snapshot.averageMemoryUsage)%", accent: DashboardPalette.accentPurple)
+                            DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(snapshot.averageMemoryUsage)%", accent: DashboardPalette.accentSecondary)
                             Divider().opacity(0.07)
-                            DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentPurple)
+                            DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentTertiary)
                             Divider().opacity(0.07)
-                            DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(snapshot.runningCount)", accent: DashboardPalette.accentPurple)
+                            DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(snapshot.runningCount)", accent: DashboardPalette.accentSecondary)
                         }
                         .frame(height: 124)
                         .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.44))
+                        .background(OverlayTheme.panelStrong)
 
                         VStack(spacing: 12) {
                             if snapshot.filtered.isEmpty {
@@ -345,7 +348,7 @@ struct VMListView: View {
                             }
                         }
                         .padding(14)
-                        .background(Color.black.opacity(0.62))
+                        .background(OverlayTheme.panelStrong)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 24))
                     .overlay(
@@ -468,13 +471,13 @@ struct VMRowCompact: View {
             Spacer()
 
             HStack(spacing: 18) {
-                VMUsageMeter(label: "CPU", value: vm.liveCPUUsagePercent, tint: DashboardPalette.accentPurple, estimated: vm.cpuUsageIsEstimated)
-                VMUsageMeter(label: "MEM", value: vm.liveMemoryUsagePercent, tint: DashboardPalette.accentCyan, estimated: vm.memoryUsageIsEstimated)
+                VMUsageMeter(label: "CPU", value: vm.liveCPUUsagePercent, tint: DashboardPalette.accentPrimary, estimated: vm.cpuUsageIsEstimated)
+                VMUsageMeter(label: "MEM", value: vm.liveMemoryUsagePercent, tint: DashboardPalette.accentSecondary, estimated: vm.memoryUsageIsEstimated)
             }
         }
         .padding(.vertical, 18)
         .padding(.horizontal, 16)
-        .background(Color.black.opacity(0.55))
+        .background(OverlayTheme.panelStrong)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
                 .stroke(Color.white.opacity(0.03), lineWidth: 1)
@@ -531,13 +534,13 @@ struct VMRowCompact: View {
     private var statusDotColor: Color {
         switch vm.state {
         case .running:
-            return DashboardPalette.accentGreen
+            return .green
         case .starting:
             return .yellow
         case .error:
             return .red
         case .paused:
-            return .orange
+            return .yellow
         case .stopped:
             return .gray
         }
@@ -638,7 +641,7 @@ struct VMCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Image(systemName: "cpu")
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(Color.white.opacity(0.84))
                         Text(vm.name)
                             .font(.system(.headline, design: .rounded))
                         
@@ -647,8 +650,8 @@ struct VMCard: View {
                                 .font(.system(size: 8, weight: .bold))
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 2)
-                                .background(AnyShapeStyle(Color.accentColor.opacity(0.2)))
-                                .foregroundStyle(AnyShapeStyle(Color.accentColor))
+                                .background(AnyShapeStyle(Color.white.opacity(0.18)))
+                                .foregroundStyle(AnyShapeStyle(Color.white.opacity(0.88)))
                                 .cornerRadius(4)
                         }
 
@@ -664,8 +667,8 @@ struct VMCard: View {
                             .font(.system(size: 8, weight: .bold))
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.12))
-                            .foregroundStyle(AnyShapeStyle(Color.accentColor))
+                            .background(Color.white.opacity(0.10))
+                            .foregroundStyle(AnyShapeStyle(Color.white.opacity(0.84)))
                             .cornerRadius(4)
                     }
                     Text(vm.isInstalled ? vm.selectedDistro.rawValue : "Provisioning System...")
@@ -699,7 +702,7 @@ struct VMCard: View {
                     )
                     Text(vm.networkMode.rawValue)
                 }
-                .foregroundStyle(AnyShapeStyle(Color.accentColor))
+                .foregroundStyle(AnyShapeStyle(Color.white.opacity(0.82)))
                 if vm.networkMode == .bridge {
                     Text(vm.bridgeInterfaceName ?? "No interface")
                         .foregroundStyle(AnyShapeStyle(.secondary))
@@ -751,8 +754,10 @@ struct PodsListView: View {
         return Group {
             if running.isEmpty {
                 ContentUnavailableView("No Running Nodes", systemImage: "bolt.horizontal.circle", description: Text("Deploy and start a Linux node to see active Kubernetes pods"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else if filteredRunning.isEmpty {
                 ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No pods or containers match your search"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
                 List {
                     ForEach(filteredRunning) { vm in
@@ -832,7 +837,7 @@ struct PodRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(status == "Running" ? Color.green : (status == "Pending" ? Color.orange : Color.red))
+                .fill(status == "Running" ? Color.green : (status == "Pending" ? Color.yellow : Color.red))
                 .frame(width: 6, height: 6)
             
             VStack(alignment: .leading, spacing: 2) {
@@ -1381,15 +1386,28 @@ struct NetworkListView: View {
     }
 
     private func linkType(forEndpointHost host: String) -> NetworkTopologyView.LinkType {
-        let h = host.lowercased()
+        let local = localLinkType
+        let remote = remoteLinkType(fromEndpointHost: host)
+
+        if remote == .unknown { return local }
+        if local == .unknown { return remote }
+        if remote != local { return .mixed }
+        return remote
+    }
+
+    private func remoteLinkType(fromEndpointHost host: String) -> NetworkTopologyView.LinkType {
+        let h = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if h.isEmpty {
             return .unknown
         }
-        if h.contains("thunderbolt") || h.contains("bridge") || h.hasPrefix("169.254.") {
+        if h.hasPrefix("fe80:") || h.contains("%en0") || h.contains("wifi") || h.contains("wlan") {
+            return .wifi
+        }
+        if h.contains("thunderbolt") || h.contains("bridge") || h.contains("tb") {
             return .thunderbolt
         }
-        if h.hasPrefix("fe80:") || h.contains("%en0") || h.contains("wifi") {
-            return .wifi
+        if h.hasPrefix("169.254.") {
+            return .unknown
         }
         return .ethernet
     }
@@ -1400,6 +1418,7 @@ struct NetworkListView: View {
             settingsMessage = "No paired devices to test."
             return
         }
+        AppNotifications.shared.requestIfNeeded()
         isClusterTestRunning = true
         settingsMessage = "Cluster test started."
         let senderName = WireGuardManager.shared.hostInfo.name
@@ -1471,24 +1490,6 @@ struct NetworkDetailItem: View {
     }
 }
 
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-    
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
-    }
-}
-
 struct StatusBadge: View {
     let state: VMState
     
@@ -1508,7 +1509,7 @@ struct StatusBadge: View {
         case .stopped: return .gray
         case .starting: return .yellow
         case .running: return .green
-        case .paused: return .orange
+        case .paused: return .yellow
         case .error: return .red
         }
     }
@@ -1909,9 +1910,9 @@ struct LegacyCapacityBar: View {
     }
 
     private var barColor: Color {
-        if ratio >= 0.9 { return .red }
-        if ratio >= 0.75 { return .orange }
-        return .green
+        if ratio >= 0.9 { return Color.white.opacity(0.92) }
+        if ratio >= 0.75 { return Color.white.opacity(0.78) }
+        return Color.white.opacity(0.62)
     }
 
     var body: some View {
@@ -1953,9 +1954,9 @@ struct LegacyDistroCard: View {
                     .font(.system(size: 10, weight: .bold))
             }
             .frame(width: 80, height: 80)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.white.opacity(0.05))
+            .background(isSelected ? Color.white.opacity(0.20) : Color.white.opacity(0.05))
             .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.white.opacity(0.88) : Color.clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
     }
@@ -1973,7 +1974,7 @@ struct LegacyRoleButtonMinimal: View {
                 .font(.system(size: 11, weight: .bold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(isSelected ? Color.accentColor : Color.white.opacity(0.05))
+                .background(isSelected ? Color.white.opacity(0.84) : Color.white.opacity(0.05))
                 .cornerRadius(8)
         }
         .buttonStyle(.plain)
@@ -1995,11 +1996,11 @@ struct LegacyRoleButton: View {
                 HStack {
                     Image(systemName: icon)
                         .font(.system(size: 20))
-                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : .secondary)
                     Spacer()
                     if isSelected {
                         Circle()
-                            .fill(Color.accentColor)
+                            .fill(Color.white.opacity(0.9))
                             .frame(width: 6, height: 6)
                     }
                 }
@@ -2014,11 +2015,11 @@ struct LegacyRoleButton: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.white.opacity(0.03))
+            .background(isSelected ? Color.white.opacity(0.10) : Color.white.opacity(0.03))
             .cornerRadius(14)
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(isSelected ? Color.white.opacity(0.34) : Color.white.opacity(0.05), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -2044,11 +2045,11 @@ struct LegacyConfigSlider: View {
                 Spacer()
                 Text("\(Int(value))\(unit)")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(value > safeMax ? .red : Color.accentColor)
+                    .foregroundStyle(value > safeMax ? Color.white.opacity(0.56) : Color.white.opacity(0.9))
             }
             
             Slider(value: $value, in: range, step: step)
-                .tint(value > safeMax ? .red : Color.accentColor)
+                .tint(value > safeMax ? Color.white.opacity(0.42) : Color.white.opacity(0.84))
                 .controlSize(.small)
         }
     }

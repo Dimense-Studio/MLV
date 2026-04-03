@@ -104,15 +104,30 @@ class VMManager {
     
     func autoStartVMsIfNeeded() {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            
-            let targets = self.virtualMachines.filter { $0.autoStartOnLaunch && $0.isInstalled && $0.state == .stopped }
-            for vm in targets {
-                do {
-                    try await self.startVM(vm)
+            // Give launch-time services and VM metadata a moment to settle.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+            for attempt in 1...3 {
+                let targets = self.virtualMachines.filter {
+                    $0.autoStartOnLaunch &&
+                    $0.isInstalled &&
+                    !$0.state.isRunning &&
+                    $0.state != .starting
+                }
+                if targets.isEmpty { break }
+
+                for vm in targets {
+                    do {
+                        try await self.startVM(vm)
+                        vm.addLog("Autostart succeeded.")
+                    } catch {
+                        vm.addLog("Autostart attempt \(attempt) failed: \(error.localizedDescription)", isError: true)
+                    }
                     try? await Task.sleep(nanoseconds: 500_000_000)
-                } catch {
-                    vm.addLog("Autostart failed: \(error.localizedDescription)", isError: true)
+                }
+
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
             }
         }

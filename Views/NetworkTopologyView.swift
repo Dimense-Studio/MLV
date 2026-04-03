@@ -5,6 +5,7 @@ struct NetworkTopologyView: View {
         case wifi
         case ethernet
         case thunderbolt
+        case mixed
         case unknown
 
         var icon: String {
@@ -12,6 +13,7 @@ struct NetworkTopologyView: View {
             case .wifi: return "wifi"
             case .ethernet: return "cable.connector"
             case .thunderbolt: return "bolt.horizontal.fill"
+            case .mixed: return "arrow.left.arrow.right"
             case .unknown: return "network"
             }
         }
@@ -197,9 +199,9 @@ struct NetworkTopologyView: View {
     }
 
     private func linkColor(for throughput: Int) -> Color {
-        if throughput >= 320 { return Color.green.opacity(0.9) }
-        if throughput >= 160 { return Color.cyan.opacity(0.9) }
-        return Color.orange.opacity(0.9)
+        if throughput >= 320 { return Color.white.opacity(0.90) }
+        if throughput >= 160 { return Color.white.opacity(0.76) }
+        return Color.white.opacity(0.58)
     }
 }
 
@@ -274,7 +276,7 @@ private struct LinkBadge: View {
         .foregroundStyle(color.opacity(0.95))
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
-        .background(Color.black.opacity(0.42), in: Capsule(style: .continuous))
+        .background(OverlayTheme.panelStrong, in: Capsule(style: .continuous))
         .overlay(Capsule(style: .continuous).stroke(OverlayTheme.border.opacity(0.6), lineWidth: 0.7))
     }
 }
@@ -317,7 +319,7 @@ private struct NodeTooltip: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(Color.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(OverlayTheme.panelStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(OverlayTheme.border.opacity(0.55), lineWidth: 0.7)

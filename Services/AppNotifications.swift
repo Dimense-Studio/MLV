@@ -2,19 +2,20 @@ import Foundation
 import UserNotifications
 
 @MainActor
-final class AppNotifications {
+final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = AppNotifications()
 
     private var isRequested = false
     private var lastSentAt: [String: Date] = [:]
 
-    private init() {}
+    private override init() {}
 
     func requestIfNeeded() {
         guard !isRequested else { return }
         isRequested = true
-
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
     func notify(
@@ -37,5 +38,17 @@ final class AppNotifications {
 
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        if #available(macOS 11.0, *) {
+            completionHandler([.banner, .sound, .list])
+        } else {
+            completionHandler([.sound])
+        }
     }
 }

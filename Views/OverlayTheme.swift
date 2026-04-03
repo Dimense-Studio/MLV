@@ -1,11 +1,11 @@
 import SwiftUI
 
 enum OverlayTheme {
-    static let background = Color(red: 0.05, green: 0.06, blue: 0.08)
-    static let backgroundEdge = Color(red: 0.12, green: 0.14, blue: 0.18)
-    static let panel = Color.white.opacity(0.035)
-    static let panelStrong = Color.white.opacity(0.06)
-    static let border = Color.white.opacity(0.07)
+    static let background = Color.black
+    static let backgroundEdge = Color(red: 0.02, green: 0.02, blue: 0.02)
+    static let panel = Color.white.opacity(0.08)
+    static let panelStrong = Color.white.opacity(0.13)
+    static let border = Color.white.opacity(0.10)
     static let textPrimary = Color.white.opacity(0.92)
     static let textSecondary = Color.white.opacity(0.64)
     static let accent = Color.white.opacity(0.90)
@@ -20,22 +20,8 @@ struct OverlayCanvasBackground: View {
                 endPoint: .bottomTrailing
             )
 
-            RadialGradient(
-                colors: [Color.white.opacity(0.10), Color.clear],
-                center: .topLeading,
-                startRadius: 24,
-                endRadius: 720
-            )
-
-            RadialGradient(
-                colors: [Color(red: 0.30, green: 0.40, blue: 0.52).opacity(0.16), Color.clear],
-                center: .bottomTrailing,
-                startRadius: 60,
-                endRadius: 900
-            )
-
             LinearGradient(
-                colors: [Color.clear, Color.black.opacity(0.24)],
+                colors: [Color.clear, Color.black.opacity(0.38)],
                 startPoint: .top,
                 endPoint: .bottom
             )

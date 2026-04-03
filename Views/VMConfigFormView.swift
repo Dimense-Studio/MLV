@@ -76,7 +76,7 @@ struct VMConfigForm: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
-                    .background(Color.black.opacity(0.28))
+                    .background(OverlayTheme.panelStrong)
 
                     formContent
 
@@ -99,11 +99,11 @@ struct VMConfigForm: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
-                    .background(Color.black.opacity(0.24))
+                    .background(OverlayTheme.panelStrong)
                 }
                 .background(
                     LinearGradient(
-                        colors: [DashboardPalette.panelAlt, Color.black.opacity(0.95)],
+                        colors: [DashboardPalette.panelAlt, OverlayTheme.panelStrong],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -373,9 +373,9 @@ struct CapacityBar: View {
     }
 
     private var barColor: Color {
-        if ratio >= 0.9 { return .red }
-        if ratio >= 0.75 { return .orange }
-        return .green
+        if ratio >= 0.9 { return Color.white.opacity(0.92) }
+        if ratio >= 0.75 { return Color.white.opacity(0.78) }
+        return Color.white.opacity(0.62)
     }
 
     var body: some View {
@@ -416,9 +416,9 @@ struct DistroCard: View {
                     .font(.system(size: 10, weight: .bold))
             }
             .frame(width: 80, height: 80)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.white.opacity(0.05))
+            .background(isSelected ? Color.white.opacity(0.20) : Color.white.opacity(0.05))
             .cornerRadius(12)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.white.opacity(0.88) : Color.clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
     }
@@ -435,7 +435,7 @@ struct RoleButtonMinimal: View {
                 .font(.system(size: 11, weight: .bold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(isSelected ? Color.accentColor : Color.white.opacity(0.05))
+                .background(isSelected ? Color.white.opacity(0.84) : Color.white.opacity(0.05))
                 .cornerRadius(8)
         }
         .buttonStyle(.plain)
@@ -456,11 +456,11 @@ struct RoleButton: View {
                 HStack {
                     Image(systemName: icon)
                         .font(.system(size: 20))
-                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : .secondary)
                     Spacer()
                     if isSelected {
                         Circle()
-                            .fill(Color.accentColor)
+                            .fill(Color.white.opacity(0.9))
                             .frame(width: 6, height: 6)
                     }
                 }
@@ -475,11 +475,11 @@ struct RoleButton: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.white.opacity(0.03))
+            .background(isSelected ? Color.white.opacity(0.10) : Color.white.opacity(0.03))
             .cornerRadius(14)
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(isSelected ? Color.white.opacity(0.34) : Color.white.opacity(0.05), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -504,11 +504,11 @@ struct ConfigSlider: View {
                 Spacer()
                 Text("\(Int(value))\(unit)")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(value > safeMax ? .red : Color.accentColor)
+                    .foregroundStyle(value > safeMax ? Color.white.opacity(0.56) : Color.white.opacity(0.9))
             }
 
             Slider(value: $value, in: range, step: step)
-                .tint(value > safeMax ? .red : Color.accentColor)
+                .tint(value > safeMax ? Color.white.opacity(0.42) : Color.white.opacity(0.84))
                 .controlSize(.small)
         }
     }

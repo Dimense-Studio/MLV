@@ -53,13 +53,19 @@ struct DarkVisualEffectView: NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
-        nsView.state = state
-        if let appearance {
-            nsView.appearance = NSAppearance(named: appearance)
-        } else {
-            nsView.appearance = nil
+        if nsView.material != material {
+            nsView.material = material
+        }
+        if nsView.blendingMode != blendingMode {
+            nsView.blendingMode = blendingMode
+        }
+        if nsView.state != state {
+            nsView.state = state
+        }
+
+        let desiredAppearance = appearance.flatMap { NSAppearance(named: $0) }
+        if nsView.appearance?.name != desiredAppearance?.name {
+            nsView.appearance = desiredAppearance
         }
     }
 }
