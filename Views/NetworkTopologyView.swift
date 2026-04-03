@@ -61,6 +61,7 @@ struct NetworkTopologyView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.35), value: nodes.map(\.id))
         }
     }
     

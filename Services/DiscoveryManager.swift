@@ -11,13 +11,24 @@ private nonisolated struct DiscoveryRequest: Codable {
 }
 
 private nonisolated struct DiscoveryResponse: Codable {
-    let hostInfo: WireGuardManager.HostInfo
+    let status: String
+    let hostInfo: WireGuardManager.HostInfo?
     let nonceBase64: String
-    let signatureBase64: String
+    let signatureBase64: String?
+    let message: String?
 }
 
 @Observable
 final class DiscoveryManager {
+    struct IncomingPairRequest: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let addressCIDR: String
+        let endpointHost: String
+        let endpointPort: Int
+        let requestedAt: Date
+    }
+
     struct DiscoveredHost: Identifiable, Hashable {
         let id: String
         let name: String
@@ -41,11 +52,14 @@ final class DiscoveryManager {
     private var inFlightPeerInfoRequests: Set<String> = []
     private var lastPeerInfoRequestAt: [String: Date] = [:]
     private let peerInfoRequestCooldown: TimeInterval = 2.0
+    private var pendingRequesterInfoByID: [String: WireGuardManager.HostInfo] = [:]
+    private var approvedRequesterIDs: Set<String> = []
     
     var onUpdate: (([DiscoveredHost]) -> Void)?
 
     var discovered: [DiscoveredHost] = []
     var pairStatusByID: [String: String] = [:]
+    var incomingPairRequests: [IncomingPairRequest] = []
 
     private init() {}
 
@@ -69,6 +83,8 @@ final class DiscoveryManager {
         browser?.cancel()
         browser = nil
         discovered = []
+        incomingPairRequests = []
+        pendingRequesterInfoByID = [:]
     }
 
     private func startListener(myInfo: WireGuardManager.HostInfo) {
@@ -112,22 +128,61 @@ final class DiscoveryManager {
                             return
                         }
                         
-                        WireGuardManager.shared.addOrUpdatePeer(from: req.requesterHostInfo)
-                        
-                        let infoData = myInfo.jsonData()
-                        var payload = Data()
-                        payload.append(nonce)
-                        payload.append(infoData)
-                        let sig = HMAC<SHA256>.authenticationCode(for: payload, using: tokenKey)
-                        
-                        let resp = DiscoveryResponse(
-                            hostInfo: myInfo,
-                            nonceBase64: req.nonceBase64,
-                            signatureBase64: Data(sig).base64EncodedString()
-                        )
-                        
-                        self.sendJSONLine(connection: connection, value: resp) {
-                            connection.cancel()
+                        let requester = req.requesterHostInfo
+                        self.pendingRequesterInfoByID[requester.id] = requester
+                        if let existing = self.incomingPairRequests.firstIndex(where: { $0.id == requester.id }) {
+                            self.incomingPairRequests[existing] = IncomingPairRequest(
+                                id: requester.id,
+                                name: requester.name,
+                                addressCIDR: requester.addressCIDR,
+                                endpointHost: requester.endpointHost,
+                                endpointPort: requester.endpointPort,
+                                requestedAt: Date()
+                            )
+                        } else {
+                            self.incomingPairRequests.append(
+                                IncomingPairRequest(
+                                    id: requester.id,
+                                    name: requester.name,
+                                    addressCIDR: requester.addressCIDR,
+                                    endpointHost: requester.endpointHost,
+                                    endpointPort: requester.endpointPort,
+                                    requestedAt: Date()
+                                )
+                            )
+                        }
+
+                        if self.approvedRequesterIDs.contains(requester.id) {
+                            WireGuardManager.shared.addOrUpdatePeer(from: requester)
+
+                            let infoData = myInfo.jsonData()
+                            var payload = Data()
+                            payload.append(nonce)
+                            payload.append(infoData)
+                            let sig = HMAC<SHA256>.authenticationCode(for: payload, using: tokenKey)
+
+                            let resp = DiscoveryResponse(
+                                status: "approved",
+                                hostInfo: myInfo,
+                                nonceBase64: req.nonceBase64,
+                                signatureBase64: Data(sig).base64EncodedString(),
+                                message: nil
+                            )
+                            self.sendJSONLine(connection: connection, value: resp) {
+                                connection.cancel()
+                            }
+                        } else {
+                            self.pairStatusByID[requester.id] = "Awaiting your approval"
+                            let resp = DiscoveryResponse(
+                                status: "pending",
+                                hostInfo: nil,
+                                nonceBase64: req.nonceBase64,
+                                signatureBase64: nil,
+                                message: "Waiting for approval on \(myInfo.name)"
+                            )
+                            self.sendJSONLine(connection: connection, value: resp) {
+                                connection.cancel()
+                            }
                         }
                     }
                 }
@@ -265,7 +320,10 @@ final class DiscoveryManager {
                 self.inFlightPeerInfoRequests.remove(host.id)
                 if info == nil {
                     let current = self.pairStatusByID[host.id] ?? ""
-                    if !current.hasPrefix("Failed"), current != "Paired" {
+                    if !current.hasPrefix("Failed"),
+                       current != "Paired",
+                       !current.hasPrefix("Awaiting"),
+                       !current.hasPrefix("Rejected") {
                         self.pairStatusByID[host.id] = "Failed: timeout"
                     }
                 }
@@ -315,11 +373,31 @@ final class DiscoveryManager {
                     maximumBytes: 64 * 1024,
                     completion: { (resp: DiscoveryResponse) in
                         Task { @MainActor in
-                            guard resp.nonceBase64 == req.nonceBase64,
-                                  let infoData = try? JSONEncoder().encode(resp.hostInfo),
-                                  let respNonce = Data(base64Encoded: resp.nonceBase64),
-                                  let sigData = Data(base64Encoded: resp.signatureBase64) else {
+                            guard resp.nonceBase64 == req.nonceBase64 else {
                                 self.pairStatusByID[host.id] = "Failed: invalid response"
+                                finish(nil)
+                                return
+                            }
+
+                            if resp.status == "pending" {
+                                self.pairStatusByID[host.id] = resp.message ?? "Awaiting remote approval"
+                                finish(nil)
+                                return
+                            }
+
+                            if resp.status == "rejected" {
+                                self.pairStatusByID[host.id] = resp.message ?? "Rejected by remote"
+                                finish(nil)
+                                return
+                            }
+
+                            guard resp.status == "approved",
+                                  let remoteInfo = resp.hostInfo,
+                                  let infoData = try? JSONEncoder().encode(remoteInfo),
+                                  let respNonce = Data(base64Encoded: resp.nonceBase64),
+                                  let signatureBase64 = resp.signatureBase64,
+                                  let sigData = Data(base64Encoded: signatureBase64) else {
+                                self.pairStatusByID[host.id] = "Failed: invalid approval"
                                 finish(nil)
                                 return
                             }
@@ -336,7 +414,7 @@ final class DiscoveryManager {
                             }
 
                             self.pairStatusByID[host.id] = "Paired"
-                            finish(resp.hostInfo)
+                            finish(remoteInfo)
                         }
                     },
                     onFailure: {
@@ -381,6 +459,20 @@ final class DiscoveryManager {
         discovered.removeAll { $0.id == id }
         pairStatusByID[id] = nil
         onUpdate?(discovered)
+    }
+
+    func approveIncomingPairRequest(id: String) {
+        guard let info = pendingRequesterInfoByID[id] else { return }
+        approvedRequesterIDs.insert(id)
+        incomingPairRequests.removeAll { $0.id == id }
+        pairStatusByID[id] = "Approved"
+        WireGuardManager.shared.addOrUpdatePeer(from: info)
+    }
+
+    func rejectIncomingPairRequest(id: String) {
+        incomingPairRequests.removeAll { $0.id == id }
+        pendingRequesterInfoByID[id] = nil
+        pairStatusByID[id] = "Rejected"
     }
 
     private func sendJSONLine<T: Encodable>(connection: NWConnection, value: T, completion: @escaping () -> Void) {

@@ -1213,6 +1213,45 @@ struct NetworkListView: View {
                 Button("Reveal") { WireGuardManager.shared.revealConfigInFinder() }
             }
             .controlSize(.small)
+
+            Divider().opacity(0.15)
+
+            Text("Incoming Pair Requests")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(OverlayTheme.textPrimary)
+
+            if DiscoveryManager.shared.incomingPairRequests.isEmpty {
+                Text("No pending requests")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(DiscoveryManager.shared.incomingPairRequests.sorted(by: { $0.requestedAt > $1.requestedAt })) { req in
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(req.name)
+                                    .font(.subheadline.weight(.medium))
+                                Text("\(req.endpointHost):\(req.endpointPort)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            HStack(spacing: 6) {
+                                Button("Approve") {
+                                    DiscoveryManager.shared.approveIncomingPairRequest(id: req.id)
+                                    settingsMessage = "Approved \(req.name)."
+                                }
+                                .controlSize(.small)
+                                Button("Reject", role: .destructive) {
+                                    DiscoveryManager.shared.rejectIncomingPairRequest(id: req.id)
+                                    settingsMessage = "Rejected \(req.name)."
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
         }
         .padding(14)
         .background(DashboardPalette.panel.opacity(0.35))
@@ -1295,7 +1334,7 @@ struct NetworkListView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Pair") {
+                    Button("Request Pair") {
                         pairDiscoveredNode(id: host.id)
                     }
                     .controlSize(.small)
