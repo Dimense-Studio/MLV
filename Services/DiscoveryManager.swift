@@ -215,10 +215,28 @@ final class DiscoveryManager {
         DispatchQueue.main.async {
             self.pairStatusByID[host.id] = "Connecting…"
         }
-        var finished = false
+        let stateQueue = DispatchQueue(label: "DiscoveryManager.requestPeerInfo.\(host.id)")
+        var didFinish = false
+        var didCancelConnection = false
+
+        let cancelConnectionIfNeeded: () -> Void = {
+            let shouldCancel = stateQueue.sync { () -> Bool in
+                if didCancelConnection { return false }
+                didCancelConnection = true
+                return true
+            }
+            if shouldCancel {
+                connection.cancel()
+            }
+        }
+
         let finish: (WireGuardManager.HostInfo?) -> Void = { info in
-            if finished { return }
-            finished = true
+            let shouldFinish = stateQueue.sync { () -> Bool in
+                if didFinish { return false }
+                didFinish = true
+                return true
+            }
+            if !shouldFinish { return }
             DispatchQueue.main.async {
                 self.inFlightPeerInfoRequests.remove(host.id)
                 if info == nil {
@@ -229,7 +247,7 @@ final class DiscoveryManager {
                 }
             }
             completion(info)
-            connection.cancel()
+            cancelConnectionIfNeeded()
         }
 
         let nonce = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
@@ -268,32 +286,46 @@ final class DiscoveryManager {
                     return
                 }
 
-                self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (resp: DiscoveryResponse) in
-                    Task { @MainActor in
-                        guard resp.nonceBase64 == req.nonceBase64,
-                              let infoData = try? JSONEncoder().encode(resp.hostInfo),
-                              let respNonce = Data(base64Encoded: resp.nonceBase64),
-                              let sigData = Data(base64Encoded: resp.signatureBase64) else {
-                            self.pairStatusByID[host.id] = "Failed: invalid response"
-                            finish(nil)
-                            return
-                        }
+                self.receiveJSONLine(
+                    connection: connection,
+                    maximumBytes: 64 * 1024,
+                    completion: { (resp: DiscoveryResponse) in
+                        Task { @MainActor in
+                            guard resp.nonceBase64 == req.nonceBase64,
+                                  let infoData = try? JSONEncoder().encode(resp.hostInfo),
+                                  let respNonce = Data(base64Encoded: resp.nonceBase64),
+                                  let sigData = Data(base64Encoded: resp.signatureBase64) else {
+                                self.pairStatusByID[host.id] = "Failed: invalid response"
+                                finish(nil)
+                                return
+                            }
 
-                        var payload = Data()
-                        payload.append(respNonce)
-                        payload.append(infoData)
-                        let key = SymmetricKey(data: Data(self.clusterToken.utf8))
-                        let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
-                        guard Data(expected) == sigData else {
-                            self.pairStatusByID[host.id] = "Failed: auth"
-                            finish(nil)
-                            return
-                        }
+                            var payload = Data()
+                            payload.append(respNonce)
+                            payload.append(infoData)
+                            let key = SymmetricKey(data: Data(self.clusterToken.utf8))
+                            let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
+                            guard Data(expected) == sigData else {
+                                self.pairStatusByID[host.id] = "Failed: auth"
+                                finish(nil)
+                                return
+                            }
 
-                        self.pairStatusByID[host.id] = "Paired"
-                        finish(resp.hostInfo)
-                    }
-                }
+                            self.pairStatusByID[host.id] = "Paired"
+                            finish(resp.hostInfo)
+                        }
+                    },
+                    onFailure: {
+                        DispatchQueue.main.async {
+                            let current = self.pairStatusByID[host.id] ?? ""
+                            if !current.hasPrefix("Failed"), current != "Paired" {
+                                self.pairStatusByID[host.id] = "Failed: no response"
+                            }
+                        }
+                        finish(nil)
+                    },
+                    cancelOnFailure: false
+                )
             })
         }
 
@@ -308,6 +340,8 @@ final class DiscoveryManager {
                 DispatchQueue.main.async {
                     self.pairStatusByID[host.id] = "Failed: \(err)"
                 }
+                finish(nil)
+            case .cancelled:
                 finish(nil)
             default:
                 break
@@ -333,28 +367,40 @@ final class DiscoveryManager {
         connection.send(content: line, completion: .contentProcessed { _ in completion() })
     }
     
-    private func receiveJSONLine<T: Decodable>(connection: NWConnection, maximumBytes: Int, completion: @escaping (T) -> Void) {
+    private func receiveJSONLine<T: Decodable>(
+        connection: NWConnection,
+        maximumBytes: Int,
+        completion: @escaping (T) -> Void,
+        onFailure: (() -> Void)? = nil,
+        cancelOnFailure: Bool = true
+    ) {
         var buffer = Data()
         var done = false
+        
+        func fail() {
+            if done { return }
+            done = true
+            if cancelOnFailure {
+                connection.cancel()
+            }
+            onFailure?()
+        }
         
         func pump() {
             if done { return }
             connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, error in
                 if done { return }
                 if error != nil {
-                    done = true
-                    connection.cancel()
+                    fail()
                     return
                 }
                 if let data { buffer.append(data) }
                 if isComplete, data == nil {
-                    done = true
-                    connection.cancel()
+                    fail()
                     return
                 }
                 if buffer.count > maximumBytes {
-                    done = true
-                    connection.cancel()
+                    fail()
                     return
                 }
                 if let idx = buffer.firstIndex(of: 0x0A) {
@@ -363,8 +409,7 @@ final class DiscoveryManager {
                         done = true
                         completion(decoded)
                     } else {
-                        done = true
-                        connection.cancel()
+                        fail()
                     }
                     return
                 }
