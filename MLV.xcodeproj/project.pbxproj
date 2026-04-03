@@ -40,6 +40,7 @@
 		3004059C2F7FD43400E27D05 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405992F7FD43400E27D05 /* AppLogger.swift */; };
 		300405A22F7FD45300E27D05 /* VMManaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004059D2F7FD45300E27D05 /* VMManaging.swift */; };
 		300405A32F7FD45300E27D05 /* VMListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A02F7FD45300E27D05 /* VMListViewModel.swift */; };
+		300405A52F7FE25500E27D05 /* AppUpdateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A42F7FE25500E27D05 /* AppUpdateManager.swift */; };
 		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -94,6 +95,7 @@
 		300405992F7FD43400E27D05 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		3004059D2F7FD45300E27D05 /* VMManaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManaging.swift; sourceTree = "<group>"; };
 		300405A02F7FD45300E27D05 /* VMListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMListViewModel.swift; sourceTree = "<group>"; };
+		300405A42F7FE25500E27D05 /* AppUpdateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateManager.swift; sourceTree = "<group>"; };
 		30D4DAA22F7578F9003C3565 /* MLV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DAB12F7578FA003C3565 /* MLVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DABB2F7578FA003C3565 /* MLVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -174,6 +176,7 @@
 				3004056A2F7F2B4800E27D05 /* VMTerminalConsoleServer.swift */,
 				3004056C2F7F2B4800E27D05 /* WireGuardManager.swift */,
 				300405952F7FD42B00E27D05 /* Protocols */,
+				300405A42F7FE25500E27D05 /* AppUpdateManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -421,6 +424,7 @@
 				3004057A2F7F2B4800E27D05 /* SettingsView.swift in Sources */,
 				3004057B2F7F2B4800E27D05 /* SymbolImage.swift in Sources */,
 				3004057C2F7F2B4800E27D05 /* TerminalLauncher.swift in Sources */,
+				300405A52F7FE25500E27D05 /* AppUpdateManager.swift in Sources */,
 				3004057D2F7F2B4800E27D05 /* UDPPortForwarder.swift in Sources */,
 				3004057E2F7F2B4800E27D05 /* VirtualMachine.swift in Sources */,
 				3004057F2F7F2B4800E27D05 /* VMConfigurationBuilder.swift in Sources */,
