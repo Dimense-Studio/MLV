@@ -1,8 +1,10 @@
 import Foundation
 import Virtualization
+import os
 
 class VMConfigurationBuilder {
     static let shared = VMConfigurationBuilder()
+    private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMConfigBuilder")
     
     func build(for vm: VirtualMachine) async throws -> VZVirtualMachineConfiguration {
         let config = VZVirtualMachineConfiguration()
@@ -74,7 +76,7 @@ class VMConfigurationBuilder {
             let bootLoader = VZEFIBootLoader()
             bootLoader.variableStore = efiStore
             config.bootLoader = bootLoader
-            print("[VMConfigBuilder] RUN MODE: Configured for EFI Disk Boot (ISO detached)")
+            logger.info("RUN MODE: Configured for EFI Disk Boot (ISO detached)")
         } else {
             // PHASE 1: INSTALL MODE - Attach ISO and boot installer (manual install)
             let isoAttachment = try VZDiskImageStorageDeviceAttachment(url: isoURL, readOnly: true)
@@ -82,7 +84,7 @@ class VMConfigurationBuilder {
             let bootLoader = VZEFIBootLoader()
             bootLoader.variableStore = efiStore
             config.bootLoader = bootLoader
-            print("[VMConfigBuilder] INSTALL MODE: Configured for EFI Boot with ISO")
+            logger.info("INSTALL MODE: Configured for EFI Boot with ISO")
         }
         
         config.storageDevices = storageDevices
@@ -129,12 +131,9 @@ class VMConfigurationBuilder {
         
         // --- BEGIN INSERT ---
         if vm.selectedDistro == .minimal {
-            // Example: Attach user-data as a CD-ROM or config drive (adjust for your implementation)
-            // ... (actual attachment logic here)
-            print("[VMConfigBuilder] Injecting cloud-init user-data (only for compatible distro)")
-            // TODO: Attach your userData disk/image here
+            logger.info("Cloud-init path selected for compatible distro")
         } else {
-            print("[VMConfigBuilder] No user-data injected: Distro does not support cloud-init.")
+            logger.info("No user-data injected: Distro does not support cloud-init")
         }
         // --- END INSERT ---
         

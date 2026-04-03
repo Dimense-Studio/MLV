@@ -214,12 +214,9 @@ class VirtualMachine: Identifiable {
     var guestCPUUsagePercent: Int = 0
     var guestMemoryUsagePercent: Int = 0
     var guestDiskUsagePercent: Int = 0
-    var monitoredProcessPID: Int = 1 {
-        didSet { persist() }
-    }
-    var monitoredProcessName: String = "" {
-        didSet { persist() }
-    }
+    // Runtime telemetry target. This is updated by polling logic and should not trigger persistence on each sample.
+    var monitoredProcessPID: Int = 1
+    var monitoredProcessName: String = ""
     var hasGuestUsageSample: Bool = false
     var lastGuestCPUTotalTicks: UInt64? = nil
     var lastGuestCPUIdleTicks: UInt64? = nil

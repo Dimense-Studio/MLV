@@ -1,7 +1,11 @@
 import Foundation
 import AppKit
+import Darwin
+import os
 
 struct HostResources {
+    private static let logger = Logger(subsystem: "dimense.net.MLV", category: "HostResources")
+
     static var cpuCount: Int {
         ProcessInfo.processInfo.processorCount
     }
@@ -18,7 +22,7 @@ struct HostResources {
                 return Int(freeSize.int64Value / (1024 * 1024 * 1024))
             }
         } catch {
-            print("Error getting free disk space: \(error)")
+            logger.error("Error getting free disk space: \(error.localizedDescription, privacy: .public)")
         }
         return 0
     }
@@ -46,42 +50,54 @@ struct HostResources {
     }
     
     static func getNetworkInterfaces() -> [NetworkInterface] {
-        var interfaces: [NetworkInterface] = []
-        
-        // Strategy: Detect real active interfaces first
-        let bsdNames = ["en0", "en1", "en2", "en3", "en4", "bridge0", "bridge100"]
-        
-        for bsd in bsdNames {
-            if let ip = getIPAddress(for: bsd), !ip.isEmpty {
-                // Determine type based on common macOS naming conventions
-                var type: NetworkInterface.InterfaceType = .unknown
-                var name = "Interface \(bsd)"
-                var speed = "Unknown"
-                
-                if bsd == "en0" {
-                    type = .wifi
-                    name = "Wi-Fi"
-                    speed = "2.4 Gbps"
-                } else if bsd.hasPrefix("en") {
-                    type = .ethernet
-                    name = "Ethernet (\(bsd))"
-                    speed = "10 Gbps"
-                } else if bsd.hasPrefix("bridge") {
-                    type = .thunderbolt
-                    name = "Thunderbolt Bridge"
-                    speed = "40 Gbps"
-                }
-                
-                interfaces.append(NetworkInterface(name: name, type: type, speed: speed, bsdName: bsd, isActive: true))
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
+            return [NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "N/A", bsdName: "nat0", isActive: true)]
+        }
+        defer { freeifaddrs(ifaddr) }
+
+        var byName: [String: Bool] = [:]
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            guard let sa = ptr.pointee.ifa_addr else { continue }
+            guard sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: ptr.pointee.ifa_name)
+            let isUp = (ptr.pointee.ifa_flags & UInt32(IFF_UP)) != 0
+            let isRunning = (ptr.pointee.ifa_flags & UInt32(IFF_RUNNING)) != 0
+            byName[name] = (byName[name] ?? false) || (isUp && isRunning)
+        }
+
+        var interfaces: [NetworkInterface] = byName.keys.sorted().map { bsd in
+            let type: NetworkInterface.InterfaceType
+            let name: String
+            if bsd.hasPrefix("en") {
+                type = bsd == "en0" ? .wifi : .ethernet
+                name = bsd == "en0" ? "Wi-Fi" : "Ethernet (\(bsd))"
+            } else if bsd.hasPrefix("bridge") {
+                type = .thunderbolt
+                name = "Bridge (\(bsd))"
+            } else {
+                type = .unknown
+                name = "Interface \(bsd)"
             }
+            return NetworkInterface(
+                name: name,
+                type: type,
+                speed: "N/A",
+                bsdName: bsd,
+                isActive: byName[bsd] ?? false
+            )
         }
-        
-        // Fallback if nothing is active
-        if interfaces.isEmpty {
-            interfaces.append(NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "1 Gbps", bsdName: "nat0", isActive: true))
+
+        interfaces.removeAll { iface in
+            iface.bsdName == "lo0" ||
+            iface.bsdName.hasPrefix("utun") ||
+            iface.bsdName.hasPrefix("awdl") ||
+            iface.bsdName.hasPrefix("llw")
         }
-        
-        return interfaces
+        interfaces.removeAll { !$0.isActive && $0.type == .unknown }
+        return interfaces.isEmpty
+            ? [NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "N/A", bsdName: "nat0", isActive: true)]
+            : interfaces
     }
 
     static func ipAddress(for bsdName: String) -> String? {

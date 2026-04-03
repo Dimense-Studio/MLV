@@ -7,6 +7,39 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3004056D2F7F2B4800E27D05 /* AppNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405512F7F2B4800E27D05 /* AppNotifications.swift */; };
+		3004056E2F7F2B4800E27D05 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405522F7F2B4800E27D05 /* AppSettingsStore.swift */; };
+		3004056F2F7F2B4800E27D05 /* BackgroundExecutionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405542F7F2B4800E27D05 /* BackgroundExecutionManager.swift */; };
+		300405702F7F2B4800E27D05 /* ClusterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405552F7F2B4800E27D05 /* ClusterManager.swift */; };
+		300405712F7F2B4800E27D05 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405562F7F2B4800E27D05 /* ContentView.swift */; };
+		300405722F7F2B4800E27D05 /* DarkGlassBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405572F7F2B4800E27D05 /* DarkGlassBackground.swift */; };
+		300405732F7F2B4800E27D05 /* DiscoveryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405582F7F2B4800E27D05 /* DiscoveryManager.swift */; };
+		300405742F7F2B4800E27D05 /* EntitlementChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405592F7F2B4800E27D05 /* EntitlementChecker.swift */; };
+		300405752F7F2B4800E27D05 /* HostResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055A2F7F2B4800E27D05 /* HostResources.swift */; };
+		300405762F7F2B4800E27D05 /* Item.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055B2F7F2B4800E27D05 /* Item.swift */; };
+		300405772F7F2B4800E27D05 /* LoginItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055C2F7F2B4800E27D05 /* LoginItemManager.swift */; };
+		300405782F7F2B4800E27D05 /* MLVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055D2F7F2B4800E27D05 /* MLVApp.swift */; };
+		300405792F7F2B4800E27D05 /* NetworkTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055E2F7F2B4800E27D05 /* NetworkTopologyView.swift */; };
+		3004057A2F7F2B4800E27D05 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004055F2F7F2B4800E27D05 /* SettingsView.swift */; };
+		3004057B2F7F2B4800E27D05 /* SymbolImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405602F7F2B4800E27D05 /* SymbolImage.swift */; };
+		3004057C2F7F2B4800E27D05 /* TerminalLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405612F7F2B4800E27D05 /* TerminalLauncher.swift */; };
+		3004057D2F7F2B4800E27D05 /* UDPPortForwarder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405622F7F2B4800E27D05 /* UDPPortForwarder.swift */; };
+		3004057E2F7F2B4800E27D05 /* VirtualMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405632F7F2B4800E27D05 /* VirtualMachine.swift */; };
+		3004057F2F7F2B4800E27D05 /* VMConfigurationBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405642F7F2B4800E27D05 /* VMConfigurationBuilder.swift */; };
+		300405802F7F2B4800E27D05 /* VMConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405652F7F2B4800E27D05 /* VMConsoleView.swift */; };
+		300405812F7F2B4800E27D05 /* VMManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405662F7F2B4800E27D05 /* VMManager.swift */; };
+		300405822F7F2B4800E27D05 /* VMRuntimeDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405672F7F2B4800E27D05 /* VMRuntimeDelegate.swift */; };
+		300405832F7F2B4800E27D05 /* VMStatePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405682F7F2B4800E27D05 /* VMStatePersistence.swift */; };
+		300405842F7F2B4800E27D05 /* VMStorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405692F7F2B4800E27D05 /* VMStorageManager.swift */; };
+		300405852F7F2B4800E27D05 /* VMTerminalConsoleServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004056A2F7F2B4800E27D05 /* VMTerminalConsoleServer.swift */; };
+		300405862F7F2B4800E27D05 /* WireGuardKeyUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004056B2F7F2B4800E27D05 /* WireGuardKeyUtils.swift */; };
+		300405872F7F2B4800E27D05 /* WireGuardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004056C2F7F2B4800E27D05 /* WireGuardManager.swift */; };
+		3004058A2F7F41FD00E27D05 /* VMPollingParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405892F7F41FD00E27D05 /* VMPollingParser.swift */; };
+		3004058C2F7FC14B00E27D05 /* VMConfigFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004058B2F7FC14B00E27D05 /* VMConfigFormView.swift */; };
+		3004059B2F7FD43400E27D05 /* EnvironmentConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405962F7FD43400E27D05 /* EnvironmentConfig.swift */; };
+		3004059C2F7FD43400E27D05 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405992F7FD43400E27D05 /* AppLogger.swift */; };
+		300405A22F7FD45300E27D05 /* VMManaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004059D2F7FD45300E27D05 /* VMManaging.swift */; };
+		300405A32F7FD45300E27D05 /* VMListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A02F7FD45300E27D05 /* VMListViewModel.swift */; };
 		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -28,19 +61,44 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		300405512F7F2B4800E27D05 /* AppNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNotifications.swift; sourceTree = "<group>"; };
+		300405522F7F2B4800E27D05 /* AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsStore.swift; sourceTree = "<group>"; };
+		300405542F7F2B4800E27D05 /* BackgroundExecutionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundExecutionManager.swift; sourceTree = "<group>"; };
+		300405552F7F2B4800E27D05 /* ClusterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClusterManager.swift; sourceTree = "<group>"; };
+		300405562F7F2B4800E27D05 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		300405572F7F2B4800E27D05 /* DarkGlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DarkGlassBackground.swift; sourceTree = "<group>"; };
+		300405582F7F2B4800E27D05 /* DiscoveryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryManager.swift; sourceTree = "<group>"; };
+		300405592F7F2B4800E27D05 /* EntitlementChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntitlementChecker.swift; sourceTree = "<group>"; };
+		3004055A2F7F2B4800E27D05 /* HostResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostResources.swift; sourceTree = "<group>"; };
+		3004055B2F7F2B4800E27D05 /* Item.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item.swift; sourceTree = "<group>"; };
+		3004055C2F7F2B4800E27D05 /* LoginItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemManager.swift; sourceTree = "<group>"; };
+		3004055D2F7F2B4800E27D05 /* MLVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLVApp.swift; sourceTree = "<group>"; };
+		3004055E2F7F2B4800E27D05 /* NetworkTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkTopologyView.swift; sourceTree = "<group>"; };
+		3004055F2F7F2B4800E27D05 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		300405602F7F2B4800E27D05 /* SymbolImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SymbolImage.swift; sourceTree = "<group>"; };
+		300405612F7F2B4800E27D05 /* TerminalLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLauncher.swift; sourceTree = "<group>"; };
+		300405622F7F2B4800E27D05 /* UDPPortForwarder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UDPPortForwarder.swift; sourceTree = "<group>"; };
+		300405632F7F2B4800E27D05 /* VirtualMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualMachine.swift; sourceTree = "<group>"; };
+		300405642F7F2B4800E27D05 /* VMConfigurationBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMConfigurationBuilder.swift; sourceTree = "<group>"; };
+		300405652F7F2B4800E27D05 /* VMConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMConsoleView.swift; sourceTree = "<group>"; };
+		300405662F7F2B4800E27D05 /* VMManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManager.swift; sourceTree = "<group>"; };
+		300405672F7F2B4800E27D05 /* VMRuntimeDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMRuntimeDelegate.swift; sourceTree = "<group>"; };
+		300405682F7F2B4800E27D05 /* VMStatePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMStatePersistence.swift; sourceTree = "<group>"; };
+		300405692F7F2B4800E27D05 /* VMStorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMStorageManager.swift; sourceTree = "<group>"; };
+		3004056A2F7F2B4800E27D05 /* VMTerminalConsoleServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMTerminalConsoleServer.swift; sourceTree = "<group>"; };
+		3004056B2F7F2B4800E27D05 /* WireGuardKeyUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireGuardKeyUtils.swift; sourceTree = "<group>"; };
+		3004056C2F7F2B4800E27D05 /* WireGuardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireGuardManager.swift; sourceTree = "<group>"; };
+		300405892F7F41FD00E27D05 /* VMPollingParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMPollingParser.swift; sourceTree = "<group>"; };
+		3004058B2F7FC14B00E27D05 /* VMConfigFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMConfigFormView.swift; sourceTree = "<group>"; };
+		300405962F7FD43400E27D05 /* EnvironmentConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentConfig.swift; sourceTree = "<group>"; };
+		300405992F7FD43400E27D05 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
+		3004059D2F7FD45300E27D05 /* VMManaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManaging.swift; sourceTree = "<group>"; };
+		300405A02F7FD45300E27D05 /* VMListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMListViewModel.swift; sourceTree = "<group>"; };
 		30D4DAA22F7578F9003C3565 /* MLV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DAB12F7578FA003C3565 /* MLVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DABB2F7578FA003C3565 /* MLVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireGuardAndClusterTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
-
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		30D4DAA42F7578F9003C3565 /* MLV */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = MLV;
-			sourceTree = "<group>";
-		};
-/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		30D4DA9F2F7578F9003C3565 /* Frameworks */ = {
@@ -67,6 +125,104 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		3004058D2F7FD3F200E27D05 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				3004055D2F7F2B4800E27D05 /* MLVApp.swift */,
+				300405522F7F2B4800E27D05 /* AppSettingsStore.swift */,
+				300405942F7FD42B00E27D05 /* Configuration */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		3004058E2F7FD3F200E27D05 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				300405562F7F2B4800E27D05 /* ContentView.swift */,
+				3004055F2F7F2B4800E27D05 /* SettingsView.swift */,
+				3004055E2F7F2B4800E27D05 /* NetworkTopologyView.swift */,
+				300405652F7F2B4800E27D05 /* VMConsoleView.swift */,
+				3004058B2F7FC14B00E27D05 /* VMConfigFormView.swift */,
+				300405572F7F2B4800E27D05 /* DarkGlassBackground.swift */,
+				300405602F7F2B4800E27D05 /* SymbolImage.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		3004058F2F7FD3F200E27D05 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				300405A02F7FD45300E27D05 /* VMListViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		300405902F7FD3F200E27D05 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				300405512F7F2B4800E27D05 /* AppNotifications.swift */,
+				300405542F7F2B4800E27D05 /* BackgroundExecutionManager.swift */,
+				300405552F7F2B4800E27D05 /* ClusterManager.swift */,
+				300405582F7F2B4800E27D05 /* DiscoveryManager.swift */,
+				3004055C2F7F2B4800E27D05 /* LoginItemManager.swift */,
+				300405612F7F2B4800E27D05 /* TerminalLauncher.swift */,
+				300405642F7F2B4800E27D05 /* VMConfigurationBuilder.swift */,
+				300405662F7F2B4800E27D05 /* VMManager.swift */,
+				300405672F7F2B4800E27D05 /* VMRuntimeDelegate.swift */,
+				300405682F7F2B4800E27D05 /* VMStatePersistence.swift */,
+				300405692F7F2B4800E27D05 /* VMStorageManager.swift */,
+				3004056A2F7F2B4800E27D05 /* VMTerminalConsoleServer.swift */,
+				3004056C2F7F2B4800E27D05 /* WireGuardManager.swift */,
+				300405952F7FD42B00E27D05 /* Protocols */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		300405912F7FD3F300E27D05 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				3004055B2F7F2B4800E27D05 /* Item.swift */,
+				300405632F7F2B4800E27D05 /* VirtualMachine.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		300405922F7FD3F300E27D05 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				300405622F7F2B4800E27D05 /* UDPPortForwarder.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		300405932F7FD3F300E27D05 /* Utils */ = {
+			isa = PBXGroup;
+			children = (
+				300405592F7F2B4800E27D05 /* EntitlementChecker.swift */,
+				3004055A2F7F2B4800E27D05 /* HostResources.swift */,
+				300405892F7F41FD00E27D05 /* VMPollingParser.swift */,
+				3004056B2F7F2B4800E27D05 /* WireGuardKeyUtils.swift */,
+				300405992F7FD43400E27D05 /* AppLogger.swift */,
+			);
+			path = Utils;
+			sourceTree = "<group>";
+		};
+		300405942F7FD42B00E27D05 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				300405962F7FD43400E27D05 /* EnvironmentConfig.swift */,
+			);
+			path = Configuration;
+			sourceTree = "<group>";
+		};
+		300405952F7FD42B00E27D05 /* Protocols */ = {
+			isa = PBXGroup;
+			children = (
+				3004059D2F7FD45300E27D05 /* VMManaging.swift */,
+			);
+			path = Protocols;
+			sourceTree = "<group>";
+		};
 		305B706C2F7F08D700E501DF /* Docs */ = {
 			isa = PBXGroup;
 			children = (
@@ -77,10 +233,16 @@
 		30D4DA992F7578F9003C3565 = {
 			isa = PBXGroup;
 			children = (
-				30D4DAA42F7578F9003C3565 /* MLV */,
 				C0FFEE0D0000000000000003 /* MLVTests */,
 				30D4DAA32F7578F9003C3565 /* Products */,
 				305B706C2F7F08D700E501DF /* Docs */,
+				3004058D2F7FD3F200E27D05 /* App */,
+				3004058E2F7FD3F200E27D05 /* Views */,
+				3004058F2F7FD3F200E27D05 /* ViewModels */,
+				300405902F7FD3F200E27D05 /* Services */,
+				300405912F7FD3F300E27D05 /* Models */,
+				300405922F7FD3F300E27D05 /* Networking */,
+				300405932F7FD3F300E27D05 /* Utils */,
 			);
 			sourceTree = "<group>";
 		};
@@ -116,9 +278,6 @@
 			buildRules = (
 			);
 			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				30D4DAA42F7578F9003C3565 /* MLV */,
 			);
 			name = MLV;
 			packageProductDependencies = (
@@ -240,6 +399,39 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3004056D2F7F2B4800E27D05 /* AppNotifications.swift in Sources */,
+				3004056E2F7F2B4800E27D05 /* AppSettingsStore.swift in Sources */,
+				3004056F2F7F2B4800E27D05 /* BackgroundExecutionManager.swift in Sources */,
+				300405702F7F2B4800E27D05 /* ClusterManager.swift in Sources */,
+				300405712F7F2B4800E27D05 /* ContentView.swift in Sources */,
+				300405722F7F2B4800E27D05 /* DarkGlassBackground.swift in Sources */,
+				3004058C2F7FC14B00E27D05 /* VMConfigFormView.swift in Sources */,
+				300405732F7F2B4800E27D05 /* DiscoveryManager.swift in Sources */,
+				3004059B2F7FD43400E27D05 /* EnvironmentConfig.swift in Sources */,
+				3004059C2F7FD43400E27D05 /* AppLogger.swift in Sources */,
+				300405742F7F2B4800E27D05 /* EntitlementChecker.swift in Sources */,
+				300405A22F7FD45300E27D05 /* VMManaging.swift in Sources */,
+				300405A32F7FD45300E27D05 /* VMListViewModel.swift in Sources */,
+				300405752F7F2B4800E27D05 /* HostResources.swift in Sources */,
+				3004058A2F7F41FD00E27D05 /* VMPollingParser.swift in Sources */,
+				300405762F7F2B4800E27D05 /* Item.swift in Sources */,
+				300405772F7F2B4800E27D05 /* LoginItemManager.swift in Sources */,
+				300405782F7F2B4800E27D05 /* MLVApp.swift in Sources */,
+				300405792F7F2B4800E27D05 /* NetworkTopologyView.swift in Sources */,
+				3004057A2F7F2B4800E27D05 /* SettingsView.swift in Sources */,
+				3004057B2F7F2B4800E27D05 /* SymbolImage.swift in Sources */,
+				3004057C2F7F2B4800E27D05 /* TerminalLauncher.swift in Sources */,
+				3004057D2F7F2B4800E27D05 /* UDPPortForwarder.swift in Sources */,
+				3004057E2F7F2B4800E27D05 /* VirtualMachine.swift in Sources */,
+				3004057F2F7F2B4800E27D05 /* VMConfigurationBuilder.swift in Sources */,
+				300405802F7F2B4800E27D05 /* VMConsoleView.swift in Sources */,
+				300405812F7F2B4800E27D05 /* VMManager.swift in Sources */,
+				300405822F7F2B4800E27D05 /* VMRuntimeDelegate.swift in Sources */,
+				300405832F7F2B4800E27D05 /* VMStatePersistence.swift in Sources */,
+				300405842F7F2B4800E27D05 /* VMStorageManager.swift in Sources */,
+				300405852F7F2B4800E27D05 /* VMTerminalConsoleServer.swift in Sources */,
+				300405862F7F2B4800E27D05 /* WireGuardKeyUtils.swift in Sources */,
+				300405872F7F2B4800E27D05 /* WireGuardManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

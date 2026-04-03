@@ -2,11 +2,13 @@ import Foundation
 import Virtualization
 import SwiftUI
 import AppKit
+import os
 
 @MainActor
 @Observable
 class VMManager {
     static let shared = VMManager()
+    private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMManager")
     var virtualMachines: [VirtualMachine] = []
     
     private var wgControlForwarders: [UUID: UDPPortForwarder] = [:]
@@ -66,7 +68,7 @@ class VMManager {
             guard let distro = VirtualMachine.LinuxDistro(rawValue: meta.selectedDistro) else { return nil }
             
             // We use a placeholder URL as the actual ISO will be staged/cached if needed
-            let placeholderURL = URL(fileURLWithPath: "/tmp/placeholder.iso")
+            let placeholderURL = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder.iso")
             
             let vm = VirtualMachine(
                 id: meta.id,
@@ -263,7 +265,7 @@ class VMManager {
         }
         
         let vmName = name ?? "Node \(virtualMachines.count + 1)"
-        let placeholderURL = URL(fileURLWithPath: "/tmp/placeholder.iso")
+        let placeholderURL = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder.iso")
         
         let vm = VirtualMachine(name: vmName, isoURL: placeholderURL, cpus: cpus, ramGB: ramGB, sysDiskGB: sysDiskGB, dataDiskGB: dataDiskGB)
         vm.isMaster = isMaster
@@ -479,19 +481,19 @@ class VMManager {
         var lines = rawContent.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let podsLines = extractSectionLines(
+        let podsLines = VMPollingParser.extractSectionLines(
             from: &lines,
             startMarker: "---PODS_START---",
             endMarker: "---PODS_END---"
         )
-        let containerLines = extractSectionLines(
+        let containerLines = VMPollingParser.extractSectionLines(
             from: &lines,
             startMarker: "---CONTAINERS_START---",
             endMarker: "---CONTAINERS_END---"
         )
         lines = stripGuestUsageMarkers(from: lines)
-        vm.pods = parsePods(from: podsLines)
-        vm.containers = parseContainers(from: containerLines)
+        vm.pods = VMPollingParser.parsePods(from: podsLines)
+        vm.containers = VMPollingParser.parseContainers(from: containerLines)
         
         if lines.count >= 3 {
             vm.ipAddress = lines[0]
@@ -500,59 +502,6 @@ class VMManager {
             vm.isConnected = true
             ensureWireGuardForwarders(for: vm)
         }
-    }
-
-    private func extractSectionLines(
-        from lines: inout [String],
-        startMarker: String,
-        endMarker: String
-    ) -> [String] {
-        guard let startIndex = lines.firstIndex(of: startMarker) else { return [] }
-        guard let endIndex = lines[(startIndex + 1)...].firstIndex(of: endMarker), endIndex > startIndex else {
-            lines.remove(at: startIndex)
-            return []
-        }
-
-        let section = Array(lines[(startIndex + 1)..<endIndex])
-        lines.removeSubrange(startIndex...endIndex)
-        return section
-    }
-
-    private func parsePods(from lines: [String]) -> [VirtualMachine.Pod] {
-        guard !lines.contains(where: { $0.contains("K3S_NOT_READY") }) else { return [] }
-        var pods: [VirtualMachine.Pod] = []
-        for line in lines {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count >= 3 else { continue }
-            pods.append(
-                VirtualMachine.Pod(
-                    name: parts[safe: 1] ?? "unknown",
-                    status: parts[safe: 2] ?? "Unknown",
-                    cpu: parts[safe: 3].flatMap { $0.isEmpty ? nil : $0 } ?? "N/A",
-                    ram: parts[safe: 4].flatMap { $0.isEmpty ? nil : $0 } ?? "N/A",
-                    namespace: parts[safe: 0] ?? "default"
-                )
-            )
-        }
-        return pods
-    }
-
-    private func parseContainers(from lines: [String]) -> [VirtualMachine.Container] {
-        guard !lines.contains(where: { $0.contains("CONTAINERS_NOT_READY") }) else { return [] }
-        var containers: [VirtualMachine.Container] = []
-        for line in lines {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count >= 3 else { continue }
-            containers.append(
-                VirtualMachine.Container(
-                    name: parts[safe: 0] ?? "container",
-                    image: parts[safe: 1] ?? "unknown",
-                    status: parts[safe: 2] ?? "Unknown",
-                    runtime: parts[safe: 3].flatMap { $0.isEmpty ? nil : $0 } ?? "docker"
-                )
-            )
-        }
-        return containers
     }
 
     private func stripGuestUsageMarkers(from lines: [String]) -> [String] {
@@ -742,6 +691,7 @@ class VMManager {
                         .compactMap { $0 }
                         .joined(separator: ", ")
                     AppNotifications.shared.notify(
+                        id: "vm-pressure-\(vm.id.uuidString)",
                         title: "VM Resource Pressure",
                         body: "\(vm.name) is near limit for over 1 minute (\(reasons))."
                     )
@@ -767,6 +717,7 @@ class VMManager {
             hostPressureStartTime = start
             if !hostPressureNotified, now.timeIntervalSince(start) >= 60 {
                 AppNotifications.shared.notify(
+                    id: "host-pressure",
                     title: "Host Near Capacity",
                     body: "Host resources are near limits for over 1 minute (CPU/RAM allocation or free disk)."
                 )
@@ -782,6 +733,7 @@ class VMManager {
         if !newlyDetected.isEmpty {
             for host in DiscoveryManager.shared.discovered where newlyDetected.contains(host.id) {
                 AppNotifications.shared.notify(
+                    id: "remote-node-\(host.id)",
                     title: "Remote Node Detected",
                     body: "\(host.name) has been detected on your cluster network."
                 )
@@ -1069,7 +1021,7 @@ class VMManager {
             let data = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(data, forKey: isoBookmarkKey)
         } catch {
-            print("Error saving bookmark: \(error)")
+            logger.error("Error saving bookmark: \(error.localizedDescription, privacy: .public)")
         }
     }
 

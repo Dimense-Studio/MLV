@@ -6,6 +6,7 @@ final class AppNotifications {
     static let shared = AppNotifications()
 
     private var isRequested = false
+    private var lastSentAt: [String: Date] = [:]
 
     private init() {}
 
@@ -16,7 +17,19 @@ final class AppNotifications {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func notify(title: String, body: String) {
+    func notify(
+        id: String? = nil,
+        title: String,
+        body: String,
+        minimumInterval: TimeInterval = 60
+    ) {
+        let key = id ?? "\(title)|\(body)"
+        let now = Date()
+        if let last = lastSentAt[key], now.timeIntervalSince(last) < minimumInterval {
+            return
+        }
+        lastSentAt[key] = now
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

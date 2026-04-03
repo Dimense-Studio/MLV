@@ -1,9 +1,11 @@
 import Foundation
 import ServiceManagement
+import os
 
 @MainActor
 final class LoginItemManager {
     static let shared = LoginItemManager()
+    private let logger = Logger(subsystem: "dimense.net.MLV", category: "LoginItem")
     
     private init() {}
     
@@ -15,7 +17,7 @@ final class LoginItemManager {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            print("[LoginItem] Failed to update login item: \(error.localizedDescription)")
+            logger.error("Failed to update login item: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -23,4 +25,3 @@ final class LoginItemManager {
         SMAppService.mainApp.status == .enabled
     }
 }
-

@@ -38,4 +38,54 @@ final class WireGuardAndClusterTests: XCTestCase {
         let best = cm.bestNode(for: spec)
         XCTAssertEqual(best?.id, "a")
     }
+
+    func testPollingParserParsesPodsAndContainers() {
+        var lines = [
+            "10.0.0.5",
+            "10.0.0.1",
+            "1.1.1.1 8.8.8.8",
+            "---PODS_START---",
+            "default|api-7f9bb|Running|100m|256Mi",
+            "---PODS_END---",
+            "---CONTAINERS_START---",
+            "web|nginx:1.27|Up 2 minutes|docker",
+            "---CONTAINERS_END---"
+        ]
+
+        let podLines = VMPollingParser.extractSectionLines(
+            from: &lines,
+            startMarker: "---PODS_START---",
+            endMarker: "---PODS_END---"
+        )
+        let containerLines = VMPollingParser.extractSectionLines(
+            from: &lines,
+            startMarker: "---CONTAINERS_START---",
+            endMarker: "---CONTAINERS_END---"
+        )
+
+        let pods = VMPollingParser.parsePods(from: podLines)
+        let containers = VMPollingParser.parseContainers(from: containerLines)
+
+        XCTAssertEqual(pods.count, 1)
+        XCTAssertEqual(pods.first?.namespace, "default")
+        XCTAssertEqual(pods.first?.name, "api-7f9bb")
+        XCTAssertEqual(pods.first?.status, "Running")
+
+        XCTAssertEqual(containers.count, 1)
+        XCTAssertEqual(containers.first?.name, "web")
+        XCTAssertEqual(containers.first?.image, "nginx:1.27")
+        XCTAssertEqual(containers.first?.runtime, "docker")
+    }
+
+    func testStorageManagerCreatesSparseDiskWithExpectedSize() throws {
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlv-test-\(UUID().uuidString).raw")
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        try VMStorageManager.shared.createSparseDisk(at: tempFile, sizeGiB: 1, preallocate: false)
+        let attrs = try FileManager.default.attributesOfItem(atPath: tempFile.path)
+        let size = attrs[.size] as? NSNumber
+
+        XCTAssertEqual(size?.int64Value, 1_073_741_824)
+    }
 }

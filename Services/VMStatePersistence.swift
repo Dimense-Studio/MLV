@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct VMMetadata: Codable {
     let id: UUID
@@ -105,6 +106,7 @@ struct VMMetadata: Codable {
 
 class VMStatePersistence {
     static let shared = VMStatePersistence()
+    private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMPersistence")
     
     private let vmsMetadataFile = "vms_metadata.json"
     
@@ -115,6 +117,8 @@ class VMStatePersistence {
     
     private var saveWorkItem: DispatchWorkItem?
     private let saveQueue = DispatchQueue(label: "mlv.persistence.save", qos: .utility)
+    private var lastSavedSignature: Int?
+    private let signatureLock = NSLock()
     
     func saveVMs(_ vms: [VirtualMachine]) {
         saveWorkItem?.cancel()
@@ -156,11 +160,25 @@ class VMStatePersistence {
                 )
             }
             do {
+                let parentDir = self.metadataURL.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: parentDir.path) {
+                    try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+                }
                 let data = try JSONEncoder().encode(metadata)
+                let signature = data.hashValue
+                self.signatureLock.lock()
+                let isDuplicate = self.lastSavedSignature == signature
+                self.signatureLock.unlock()
+                if isDuplicate {
+                    return
+                }
                 try data.write(to: self.metadataURL, options: .atomic)
-                print("[VMPersistence] Saved \(metadata.count) VMs to disk.")
+                self.signatureLock.lock()
+                self.lastSavedSignature = signature
+                self.signatureLock.unlock()
+                self.logger.debug("Saved \(metadata.count, privacy: .public) VMs to disk.")
             } catch {
-                print("[VMPersistence] Error saving metadata: \(error.localizedDescription)")
+                self.logger.error("Error saving metadata: \(error.localizedDescription, privacy: .public)")
             }
         }
         saveWorkItem = workItem
@@ -173,12 +191,15 @@ class VMStatePersistence {
         }
         
         do {
-            let data = try Data(contentsOf: metadataURL)
+            let data = try Data(contentsOf: metadataURL, options: .mappedIfSafe)
             let metadata = try JSONDecoder().decode([VMMetadata].self, from: data)
-            print("[VMPersistence] Loaded \(metadata.count) VMs from disk.")
+            signatureLock.lock()
+            lastSavedSignature = data.hashValue
+            signatureLock.unlock()
+            logger.debug("Loaded \(metadata.count, privacy: .public) VMs from disk.")
             return metadata
         } catch {
-            print("[VMPersistence] Error loading metadata: \(error.localizedDescription)")
+            logger.error("Error loading metadata: \(error.localizedDescription, privacy: .public)")
             return []
         }
     }

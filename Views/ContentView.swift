@@ -146,6 +146,7 @@ struct ContentView: View {
                         .navigationTitle("Network Topology")
                 }
             }
+            .animation(.easeInOut(duration: 0.22), value: selectedTab)
             .background(
                 LinearGradient(
                     colors: [DashboardPalette.surface, Color.black],
@@ -198,82 +199,97 @@ struct ContentView: View {
 struct VMListView: View {
     @State private var showingConfigForm = false
     @State private var editingVM: VirtualMachine? = nil
-    @State private var showingEditForm = false
     @State private var search: String = ""
+    @State private var viewModel = VMListViewModel()
     
     var body: some View {
-        let all = VMManager.shared.virtualMachines
-        let filtered = all.filter { search.isEmpty ? true : $0.name.localizedCaseInsensitiveContains(search) }
-        let runningCount = all.filter(\.state.isRunning).count
-        let runningVMs = filtered.filter(\.state.isRunning)
-        let sampledCPU = runningVMs.map(\.liveCPUUsagePercent).filter { $0 >= 0 }
-        let sampledMemory = runningVMs.map(\.liveMemoryUsagePercent).filter { $0 >= 0 }
-        let averageCPUUsage = sampledCPU.isEmpty ? 0 : sampledCPU.reduce(0, +) / sampledCPU.count
-        let averageMemoryUsage = sampledMemory.isEmpty ? 0 : sampledMemory.reduce(0, +) / sampledMemory.count
-        let allOperational = !all.isEmpty && runningCount == all.count
+        let snapshot = viewModel.snapshot(search: search)
         
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(allOperational ? DashboardPalette.accentGreen : Color.orange)
-                            .frame(width: 11, height: 11)
-                        Text(allOperational ? "All systems operational" : "Cluster needs attention")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(DashboardPalette.textSecondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
-                    .background(DashboardPalette.panel)
+        return ZStack(alignment: .trailing) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(snapshot.allOperational ? DashboardPalette.accentGreen : Color.orange)
+                                .frame(width: 11, height: 11)
+                            Text(snapshot.allOperational ? "All systems operational" : "Cluster needs attention")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .background(DashboardPalette.panel)
 
-                    HStack(spacing: 0) {
-                        DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(averageCPUUsage)%", accent: DashboardPalette.accentPurple)
-                        Divider().opacity(0.07)
-                        DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(averageMemoryUsage)%", accent: DashboardPalette.accentPurple)
-                        Divider().opacity(0.07)
-                        DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(all.count)", accent: DashboardPalette.accentPurple)
-                        Divider().opacity(0.07)
-                        DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(runningCount)", accent: DashboardPalette.accentPurple)
-                    }
-                    .frame(height: 124)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.44))
+                        HStack(spacing: 0) {
+                            DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(snapshot.averageCPUUsage)%", accent: DashboardPalette.accentPurple)
+                            Divider().opacity(0.07)
+                            DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(snapshot.averageMemoryUsage)%", accent: DashboardPalette.accentPurple)
+                            Divider().opacity(0.07)
+                            DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentPurple)
+                            Divider().opacity(0.07)
+                            DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(snapshot.runningCount)", accent: DashboardPalette.accentPurple)
+                        }
+                        .frame(height: 124)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.44))
 
-                    VStack(spacing: 12) {
-                        if filtered.isEmpty {
-                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
-                                .padding(.vertical, 36)
-                        } else {
-                            ForEach(filtered) { vm in
-                                VMRowCompact(vm: vm, onDoubleClick: { vm in
-                                    NSApp.activate(ignoringOtherApps: true)
-                                    NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
-                                }, onEdit: { vm in
-                                    editingVM = vm
-                                    showingEditForm = true
-                                })
+                        VStack(spacing: 12) {
+                            if snapshot.filtered.isEmpty {
+                                ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
+                                    .padding(.vertical, 36)
+                            } else {
+                                ForEach(snapshot.filtered) { vm in
+                                    VMRowCompact(vm: vm, onDoubleClick: { vm in
+                                        NSApp.activate(ignoringOtherApps: true)
+                                        NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
+                                    }, onEdit: { vm in
+                                        editingVM = vm
+                                        showingConfigForm = true
+                                    })
+                                }
                             }
                         }
+                        .padding(14)
+                        .background(Color.black.opacity(0.62))
                     }
-                    .padding(14)
-                    .background(Color.black.opacity(0.62))
+                    .clipShape(RoundedRectangle(cornerRadius: 24))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 24))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
+                .padding(16)
+                .padding(.trailing, showingConfigForm ? 460 : 0)
+                .animation(.easeInOut(duration: 0.22), value: showingConfigForm)
             }
-            .padding(16)
+            .scrollIndicators(.hidden)
+
+            if showingConfigForm {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        showingConfigForm = false
+                        editingVM = nil
+                    }
+                    .transition(.opacity)
+            }
+
+            if showingConfigForm {
+                VMConfigForm(isPresented: $showingConfigForm, vmToEdit: editingVM, presentationStyle: .drawer)
+                    .frame(width: 440)
+                    .frame(maxHeight: .infinity)
+                    .shadow(color: Color.black.opacity(0.35), radius: 24, x: -8, y: 0)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .scrollIndicators(.hidden)
         .background(DashboardPalette.surface)
         .searchable(text: $search)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    editingVM = nil
                     showingConfigForm = true
                 } label: {
                     Image(systemName: "plus")
@@ -283,16 +299,6 @@ struct VMListView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Add Node")
-            }
-        }
-        .sheet(isPresented: $showingConfigForm) {
-            VMConfigForm(isPresented: $showingConfigForm, vmToEdit: nil)
-        }
-        .sheet(isPresented: $showingEditForm, onDismiss: {
-            editingVM = nil
-        }) {
-            if let vm = editingVM {
-                VMConfigForm(isPresented: $showingEditForm, vmToEdit: vm)
             }
         }
     }
@@ -1094,10 +1100,18 @@ struct StatusBadge: View {
         .modelContainer(for: Item.self, inMemory: true)
 }
 
-struct VMConfigForm: View {
+#if false
+struct LegacyVMConfigForm: View {
     @Environment(\.dismiss) private var dismiss
+    
+    enum PresentationStyle {
+        case sheet
+        case drawer
+    }
+    
     @Binding var isPresented: Bool
     let vmToEdit: VirtualMachine?
+    var presentationStyle: PresentationStyle = .sheet
     
     @State private var vmName: String = ""
     @State private var cpuCount: Int = 4
@@ -1123,169 +1137,87 @@ struct VMConfigForm: View {
     private let freeDisk = HostResources.freeDiskSpaceGB
     private let interfaces = HostResources.getNetworkInterfaces()
     private var isEditing: Bool { vmToEdit != nil }
+    private var primaryActionTitle: String { isEditing ? "Save" : "Deploy" }
     
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    DashboardPanel {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Identity")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DashboardPalette.textSecondary)
-                            TextField("Node Name", text: $vmName)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.body, design: .monospaced))
-                                .disabled(isEditing)
-                            Picker("Role", selection: $isMaster) {
-                                Text("Worker").tag(false)
-                                Text("Master").tag(true)
+        Group {
+            if presentationStyle == .sheet {
+                NavigationStack {
+                    formContent
+                        .navigationTitle(isEditing ? "Edit Node" : "Deploy Node")
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Cancel") { closeForm() }
+                                    .disabled(isDeploying)
                             }
-                            .pickerStyle(.segmented)
-                        }
-                    }
-
-                    DashboardPanel {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Distribution")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DashboardPalette.textSecondary)
-                            Picker("Linux", selection: $selectedDistro) {
-                                ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
-                                    Text(distro.rawValue).tag(distro)
-                                }
+                            ToolbarItem(placement: .primaryAction) {
+                                primaryActionButton
                             }
                         }
-                    }
-
-                    DashboardPanel {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Resources")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DashboardPalette.textSecondary)
-                            Stepper(value: $cpuCount, in: 1...HostResources.cpuCount, step: 1) {
-                                HStack {
-                                    Text("CPU")
-                                    Spacer()
-                                    Text("\(cpuCount)")
-                                        .font(.system(.body, design: .monospaced))
-                                        .foregroundStyle(cpuCount > maxCores ? Color.red : DashboardPalette.textSecondary)
-                                }
-                            }
-                            CapacityBar(title: "Host CPU Budget", used: cpuCount, total: HostResources.cpuCount)
-                            Stepper(value: $memoryGB, in: 2...HostResources.totalMemoryGB, step: 2) {
-                                HStack {
-                                    Text("RAM")
-                                    Spacer()
-                                    Text("\(memoryGB) GB")
-                                        .font(.system(.body, design: .monospaced))
-                                        .foregroundStyle(memoryGB > maxRAM ? Color.red : DashboardPalette.textSecondary)
-                                }
-                            }
-                            CapacityBar(title: "Host RAM Budget", used: memoryGB, total: HostResources.totalMemoryGB)
-                            Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
-                                HStack {
-                                    Text("System Disk")
-                                    Spacer()
-                                    Text("\(systemDiskGB) GB")
-                                        .font(.system(.body, design: .monospaced))
-                                        .foregroundStyle(DashboardPalette.textSecondary)
-                                }
-                            }
-                            CapacityBar(title: "Estimated Host Disk", used: systemDiskGB + (useDedicatedLonghornDisk ? dataDiskGB : 0), total: max(1, freeDisk))
-                        }
-                    }
-
-                    DashboardPanel {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Storage")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DashboardPalette.textSecondary)
-                            Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
-                            if useDedicatedLonghornDisk {
-                                let maxData = max(5, freeDisk - systemDiskGB - 10)
-                                Stepper(value: $dataDiskGB, in: 5...maxData, step: 5) {
-                                    HStack {
-                                        Text("Longhorn Disk")
-                                        Spacer()
-                                        Text("\(dataDiskGB) GB")
-                                            .font(.system(.body, design: .monospaced))
-                                            .foregroundStyle((systemDiskGB + dataDiskGB) > freeDisk ? Color.red : DashboardPalette.textSecondary)
-                                    }
-                                }
-                                CapacityBar(title: "Storage Pressure", used: systemDiskGB + dataDiskGB, total: max(1, freeDisk))
-                            }
-                        }
-                    }
-
-                    DashboardPanel {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Networking")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DashboardPalette.textSecondary)
-                            Picker("Mode", selection: $selectedNetworkMode) {
-                                ForEach(VMNetworkMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            if selectedNetworkMode == .bridge {
-                                Picker("Bridge Interface", selection: $selectedBridgeName) {
-                                    ForEach(interfaces, id: \.bsdName) { iface in
-                                        Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
-                                    }
-                                }
-                            }
-                            Toggle("Enable Secondary Interface", isOn: $enableSecondaryNetwork)
-                            if enableSecondaryNetwork {
-                                Picker("Secondary Mode", selection: $secondaryNetworkMode) {
-                                    ForEach(VMNetworkMode.allCases, id: \.self) { mode in
-                                        Text(mode.rawValue).tag(mode)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
-                                if secondaryNetworkMode == .bridge {
-                                    Picker("Secondary Bridge", selection: $secondaryBridgeName) {
-                                        ForEach(interfaces, id: \.bsdName) { iface in
-                                            Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
-                .padding(16)
-            }
-            .scrollContentBackground(.hidden)
-            .background(
-                LinearGradient(
-                    colors: [DashboardPalette.surface, Color.black],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .navigationTitle(isEditing ? "Edit Node" : "Deploy Node")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { closeForm() }
+                .frame(width: 520, height: 600)
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Color.white.opacity(0.18))
+                            .frame(width: 8, height: 8)
+                        Text(isEditing ? "Edit Node" : "Deploy Node")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                        Spacer()
+                        Button {
+                            closeForm()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.borderless)
                         .disabled(isDeploying)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        submit()
-                    } label: {
-                        if isDeploying {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text(isEditing ? "Save" : "Deploy")
-                        }
                     }
-                    .disabled(isDeploying)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color.black.opacity(0.28))
+
+                    formContent
+
+                    Divider()
+                        .overlay(Color.white.opacity(0.08))
+
+                    HStack(spacing: 10) {
+                        Button("Cancel") {
+                            closeForm()
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .disabled(isDeploying)
+
+                        Spacer()
+
+                        primaryActionButton
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color.black.opacity(0.24))
+                }
+                .background(
+                    LinearGradient(
+                        colors: [DashboardPalette.panelAlt, Color.black.opacity(0.95)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.08))
+                        .frame(width: 1)
                 }
             }
         }
-        .frame(width: 520, height: 600)
         .onAppear {
             if let vm = vmToEdit {
                 vmName = vm.name
@@ -1317,10 +1249,167 @@ struct VMConfigForm: View {
             Text(errorMessage ?? "")
         }
     }
+
+    private var formContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Identity")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        TextField("Node Name", text: $vmName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .disabled(isEditing)
+                        Picker("Role", selection: $isMaster) {
+                            Text("Worker").tag(false)
+                            Text("Master").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Distribution")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        Picker("Linux", selection: $selectedDistro) {
+                            ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
+                                Text(distro.rawValue).tag(distro)
+                            }
+                        }
+                    }
+                }
+
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Resources")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        Stepper(value: $cpuCount, in: 1...HostResources.cpuCount, step: 1) {
+                            HStack {
+                                Text("CPU")
+                                Spacer()
+                                Text("\(cpuCount)")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(cpuCount > maxCores ? Color.red : DashboardPalette.textSecondary)
+                            }
+                        }
+                        CapacityBar(title: "Host CPU Budget", used: cpuCount, total: HostResources.cpuCount)
+                        Stepper(value: $memoryGB, in: 2...HostResources.totalMemoryGB, step: 2) {
+                            HStack {
+                                Text("RAM")
+                                Spacer()
+                                Text("\(memoryGB) GB")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(memoryGB > maxRAM ? Color.red : DashboardPalette.textSecondary)
+                            }
+                        }
+                        CapacityBar(title: "Host RAM Budget", used: memoryGB, total: HostResources.totalMemoryGB)
+                        Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
+                            HStack {
+                                Text("System Disk")
+                                Spacer()
+                                Text("\(systemDiskGB) GB")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(DashboardPalette.textSecondary)
+                            }
+                        }
+                        CapacityBar(title: "Estimated Host Disk", used: systemDiskGB + (useDedicatedLonghornDisk ? dataDiskGB : 0), total: max(1, freeDisk))
+                    }
+                }
+
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Storage")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
+                        if useDedicatedLonghornDisk {
+                            let maxData = max(5, freeDisk - systemDiskGB - 10)
+                            Stepper(value: $dataDiskGB, in: 5...maxData, step: 5) {
+                                HStack {
+                                    Text("Longhorn Disk")
+                                    Spacer()
+                                    Text("\(dataDiskGB) GB")
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle((systemDiskGB + dataDiskGB) > freeDisk ? Color.red : DashboardPalette.textSecondary)
+                                }
+                            }
+                            CapacityBar(title: "Storage Pressure", used: systemDiskGB + dataDiskGB, total: max(1, freeDisk))
+                        }
+                    }
+                }
+
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Networking")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DashboardPalette.textSecondary)
+                        Picker("Mode", selection: $selectedNetworkMode) {
+                            ForEach(VMNetworkMode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        if selectedNetworkMode == .bridge {
+                            Picker("Bridge Interface", selection: $selectedBridgeName) {
+                                ForEach(interfaces, id: \.bsdName) { iface in
+                                    Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                }
+                            }
+                        }
+                        Toggle("Enable Secondary Interface", isOn: $enableSecondaryNetwork)
+                        if enableSecondaryNetwork {
+                            Picker("Secondary Mode", selection: $secondaryNetworkMode) {
+                                ForEach(VMNetworkMode.allCases, id: \.self) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            if secondaryNetworkMode == .bridge {
+                                Picker("Secondary Bridge", selection: $secondaryBridgeName) {
+                                    ForEach(interfaces, id: \.bsdName) { iface in
+                                        Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .scrollContentBackground(.hidden)
+        .background(
+            LinearGradient(
+                colors: [DashboardPalette.surface, Color.black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    private var primaryActionButton: some View {
+        Button {
+            submit()
+        } label: {
+            if isDeploying {
+                ProgressView().controlSize(.small)
+            } else {
+                Text(primaryActionTitle)
+            }
+        }
+        .disabled(isDeploying)
+    }
     
     private func closeForm() {
         isPresented = false
-        dismiss()
+        if presentationStyle == .sheet {
+            dismiss()
+        }
     }
 
     private func submit() {
@@ -1376,7 +1465,8 @@ struct VMConfigForm: View {
     }
 }
 
-struct CapacityBar: View {
+struct LegacyCapacityBar: View {
+    
     let title: String
     let used: Int
     let total: Int
@@ -1416,7 +1506,8 @@ struct CapacityBar: View {
     }
 }
 
-struct DistroCard: View {
+struct LegacyDistroCard: View {
+    
     let distro: VirtualMachine.LinuxDistro
     let isSelected: Bool
     let action: () -> Void
@@ -1438,7 +1529,8 @@ struct DistroCard: View {
     }
 }
 
-struct RoleButtonMinimal: View {
+struct LegacyRoleButtonMinimal: View {
+    
     let title: String
     let isSelected: Bool
     let action: () -> Void
@@ -1456,7 +1548,8 @@ struct RoleButtonMinimal: View {
     }
 }
 
-struct RoleButton: View {
+struct LegacyRoleButton: View {
+    
     let title: String
     let subtitle: String
     let icon: String
@@ -1500,7 +1593,8 @@ struct RoleButton: View {
     }
 }
 
-struct ConfigSlider: View {
+struct LegacyConfigSlider: View {
+    
     let label: String
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -1527,3 +1621,4 @@ struct ConfigSlider: View {
         }
     }
 }
+#endif
