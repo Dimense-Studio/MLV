@@ -16,14 +16,14 @@ extension UTType {
 }
 
 enum DashboardPalette {
-    static let surface = Color(red: 0.04, green: 0.05, blue: 0.07)
-    static let panel = Color(red: 0.06, green: 0.07, blue: 0.10)
-    static let panelAlt = Color(red: 0.08, green: 0.09, blue: 0.13)
-    static let border = Color.white.opacity(0.07)
-    static let textSecondary = Color.white.opacity(0.62)
-    static let accentPurple = Color(red: 0.58, green: 0.33, blue: 0.90)
-    static let accentCyan = Color(red: 0.15, green: 0.72, blue: 0.82)
-    static let accentGreen = Color(red: 0.09, green: 0.78, blue: 0.52)
+    static let surface = OverlayTheme.background
+    static let panel = OverlayTheme.panel
+    static let panelAlt = OverlayTheme.panelStrong
+    static let border = OverlayTheme.border
+    static let textSecondary = OverlayTheme.textSecondary
+    static let accentPurple = Color(red: 0.87, green: 0.87, blue: 0.90)
+    static let accentCyan = Color(red: 0.78, green: 0.80, blue: 0.84)
+    static let accentGreen = Color(red: 0.64, green: 0.84, blue: 0.71)
 }
 
 struct DashboardPanel<Content: View>: View {
@@ -100,68 +100,36 @@ struct ContentView: View {
     
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedTab) {
-                Section {
-                    ForEach(ClusterTab.allCases, id: \.self) { tab in
-                        NavigationLink(value: tab) {
-                            Label(tab.rawValue, systemImage: tab.icon)
-                        }
-                    }
-                } header: {
-                    Text("Cluster")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                }
-                
-                Section {
-                    Button {
-                        showingISOImporter = true
-                    } label: {
-                        Label("Authorize Cluster ISO", systemImage: VMManager.shared.authorizedISOURL == nil ? "lock.shield" : "checkmark.shield.fill")
-                            .foregroundStyle(VMManager.shared.authorizedISOURL == nil ? .orange : .green)
-                    }
-                } header: {
-                    Text("Security")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .background(DashboardPalette.surface)
+            OverlaySidebar(
+                selectedTab: $selectedTab,
+                isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
+                onAuthorizeISO: { showingISOImporter = true }
+            )
+            .padding(.vertical, 10)
+            .padding(.leading, 10)
+            .padding(.trailing, 4)
         } detail: {
-            Group {
+            ZStack {
+                OverlayCanvasBackground()
                 switch selectedTab {
                 case .vms:
-                    VMListView()
+                    VMListView(search: searchText)
                         .navigationTitle("Virtual Machines")
                 case .pods:
-                    PodsListView()
+                    PodsListView(search: searchText)
                         .navigationTitle("Kubernetes Pods")
                 case .storage:
-                    StorageListView()
+                    StorageListView(search: searchText)
                         .navigationTitle("Distributed Storage")
                 case .network:
-                    NetworkListView()
+                    NetworkListView(search: searchText)
                         .navigationTitle("Network Topology")
                 }
             }
+            .searchable(text: $searchText)
             .animation(.easeInOut(duration: 0.22), value: selectedTab)
-            .background(
-                LinearGradient(
-                    colors: [DashboardPalette.surface, Color.black],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
         }
-        .background(
-            LinearGradient(
-                colors: [Color.black, DashboardPalette.surface],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .navigationSplitViewStyle(.balanced)
         .fileImporter(
             isPresented: $showingISOImporter,
             allowedContentTypes: [.iso],
@@ -190,6 +158,132 @@ struct ContentView: View {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+        .onChange(of: searchText) { _, newValue in
+            let query = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return }
+            guard !tabContainsMatch(selectedTab, query: query) else { return }
+            if let matchingTab = ClusterTab.allCases.first(where: { tabContainsMatch($0, query: query) }) {
+                selectedTab = matchingTab
+            }
+        }
+    }
+
+    private func tabContainsMatch(_ tab: ClusterTab, query: String) -> Bool {
+        if tab.rawValue.localizedCaseInsensitiveContains(query) {
+            return true
+        }
+        let allVMs = VMManager.shared.virtualMachines
+        switch tab {
+        case .vms:
+            return allVMs.contains { vm in
+                vm.name.localizedCaseInsensitiveContains(query)
+            }
+        case .pods:
+            let running = allVMs.filter { $0.state == .running }
+            return running.contains { vm in
+                vm.name.localizedCaseInsensitiveContains(query) ||
+                vm.pods.contains(where: {
+                    $0.name.localizedCaseInsensitiveContains(query) ||
+                    $0.namespace.localizedCaseInsensitiveContains(query) ||
+                    $0.status.localizedCaseInsensitiveContains(query) ||
+                    $0.cpu.localizedCaseInsensitiveContains(query) ||
+                    $0.ram.localizedCaseInsensitiveContains(query)
+                }) ||
+                vm.containers.contains(where: {
+                    $0.name.localizedCaseInsensitiveContains(query) ||
+                    $0.image.localizedCaseInsensitiveContains(query) ||
+                    $0.status.localizedCaseInsensitiveContains(query) ||
+                    $0.runtime.localizedCaseInsensitiveContains(query)
+                })
+            }
+        case .storage:
+            return allVMs.contains { vm in
+                vm.name.localizedCaseInsensitiveContains(query) ||
+                "system.img".localizedCaseInsensitiveContains(query) ||
+                "data.img".localizedCaseInsensitiveContains(query) ||
+                "OS & Boot".localizedCaseInsensitiveContains(query) ||
+                "Longhorn Block Storage".localizedCaseInsensitiveContains(query)
+            }
+        case .network:
+            if WireGuardManager.shared.hostInfo.name.localizedCaseInsensitiveContains(query) ||
+                WireGuardManager.shared.publicKeyShort.localizedCaseInsensitiveContains(query) ||
+                VMManager.shared.clusterToken.localizedCaseInsensitiveContains(query) {
+                return true
+            }
+            if DiscoveryManager.shared.discovered.contains(where: { host in
+                host.name.localizedCaseInsensitiveContains(query) ||
+                host.addressCIDR.localizedCaseInsensitiveContains(query) ||
+                (DiscoveryManager.shared.pairStatusByID[host.id] ?? "").localizedCaseInsensitiveContains(query)
+            }) {
+                return true
+            }
+            if WireGuardManager.shared.peers.contains(where: { peer in
+                peer.name.localizedCaseInsensitiveContains(query) ||
+                peer.addressCIDR.localizedCaseInsensitiveContains(query)
+            }) {
+                return true
+            }
+            return allVMs.contains { vm in
+                vm.name.localizedCaseInsensitiveContains(query) ||
+                vm.networkMode.rawValue.localizedCaseInsensitiveContains(query) ||
+                vm.ipAddress.localizedCaseInsensitiveContains(query) ||
+                vm.gateway.localizedCaseInsensitiveContains(query) ||
+                (vm.bridgeInterfaceName ?? "").localizedCaseInsensitiveContains(query)
+            }
+        }
+    }
+}
+
+private struct OverlaySidebar: View {
+    @Binding var selectedTab: ContentView.ClusterTab
+    let isISOAuthorized: Bool
+    let onAuthorizeISO: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(ContentView.ClusterTab.allCases, id: \.self) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: tab.icon)
+                                .frame(width: 18)
+                            Text(tab.rawValue)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(selectedTab == tab ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 11)
+                        .overlay(alignment: .leading) {
+                            Capsule(style: .continuous)
+                                .fill(OverlayTheme.accent)
+                                .frame(width: 3, height: 18)
+                                .opacity(selectedTab == tab ? 0.9 : 0)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button(action: onAuthorizeISO) {
+                HStack(spacing: 10) {
+                    Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
+                    Text(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
+                    Spacer()
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
     }
 }
 
@@ -199,7 +293,7 @@ struct ContentView: View {
 struct VMListView: View {
     @State private var showingConfigForm = false
     @State private var editingVM: VirtualMachine? = nil
-    @State private var search: String = ""
+    let search: String
     @State private var viewModel = VMListViewModel()
     
     var body: some View {
@@ -285,7 +379,6 @@ struct VMListView: View {
             }
         }
         .background(DashboardPalette.surface)
-        .searchable(text: $search)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -633,17 +726,54 @@ struct VMCard: View {
 }
 
 struct PodsListView: View {
+    let search: String
+
     var body: some View {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let running = VMManager.shared.virtualMachines.filter { $0.state == .running }
+        let filteredRunning = running.filter { vm in
+            guard !query.isEmpty else { return true }
+            return vm.name.localizedCaseInsensitiveContains(query) ||
+                vm.pods.contains(where: {
+                    $0.name.localizedCaseInsensitiveContains(query) ||
+                    $0.namespace.localizedCaseInsensitiveContains(query) ||
+                    $0.status.localizedCaseInsensitiveContains(query) ||
+                    $0.cpu.localizedCaseInsensitiveContains(query) ||
+                    $0.ram.localizedCaseInsensitiveContains(query)
+                }) ||
+                vm.containers.contains(where: {
+                    $0.name.localizedCaseInsensitiveContains(query) ||
+                    $0.image.localizedCaseInsensitiveContains(query) ||
+                    $0.status.localizedCaseInsensitiveContains(query) ||
+                    $0.runtime.localizedCaseInsensitiveContains(query)
+                })
+        }
         
         return Group {
             if running.isEmpty {
                 ContentUnavailableView("No Running Nodes", systemImage: "bolt.horizontal.circle", description: Text("Deploy and start a Linux node to see active Kubernetes pods"))
+            } else if filteredRunning.isEmpty {
+                ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No pods or containers match your search"))
             } else {
                 List {
-                    ForEach(running) { vm in
+                    ForEach(filteredRunning) { vm in
+                        let showAllForVM = query.isEmpty || vm.name.localizedCaseInsensitiveContains(query)
+                        let visiblePods = showAllForVM ? vm.pods : vm.pods.filter {
+                            $0.name.localizedCaseInsensitiveContains(query) ||
+                            $0.namespace.localizedCaseInsensitiveContains(query) ||
+                            $0.status.localizedCaseInsensitiveContains(query) ||
+                            $0.cpu.localizedCaseInsensitiveContains(query) ||
+                            $0.ram.localizedCaseInsensitiveContains(query)
+                        }
+                        let visibleContainers = showAllForVM ? vm.containers : vm.containers.filter {
+                            $0.name.localizedCaseInsensitiveContains(query) ||
+                            $0.image.localizedCaseInsensitiveContains(query) ||
+                            $0.status.localizedCaseInsensitiveContains(query) ||
+                            $0.runtime.localizedCaseInsensitiveContains(query)
+                        }
+
                         Section {
-                            if vm.pods.isEmpty && vm.containers.isEmpty {
+                            if visiblePods.isEmpty && visibleContainers.isEmpty {
                                 HStack(spacing: 8) {
                                     ProgressView()
                                         .controlSize(.small)
@@ -652,21 +782,21 @@ struct PodsListView: View {
                                 }
                             }
 
-                            if !vm.pods.isEmpty {
+                            if !visiblePods.isEmpty {
                                 Text("Kubernetes Pods")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(.secondary)
-                                ForEach(vm.pods) { pod in
+                                ForEach(visiblePods) { pod in
                                     PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
                                 }
                             }
 
-                            if !vm.containers.isEmpty {
+                            if !visibleContainers.isEmpty {
                                 Text("Docker Containers")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(.secondary)
-                                    .padding(.top, vm.pods.isEmpty ? 0 : 8)
-                                ForEach(vm.containers) { container in
+                                    .padding(.top, visiblePods.isEmpty ? 0 : 8)
+                                ForEach(visibleContainers) { container in
                                     ContainerRow(
                                         name: container.name,
                                         image: container.image,
@@ -817,15 +947,28 @@ struct ResourceMetric: View {
 }
 
 struct StorageListView: View {
+    let search: String
+
     var body: some View {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let all = VMManager.shared.virtualMachines
+        let filtered = all.filter { vm in
+            guard !query.isEmpty else { return true }
+            return vm.name.localizedCaseInsensitiveContains(query) ||
+                "system.img".localizedCaseInsensitiveContains(query) ||
+                "data.img".localizedCaseInsensitiveContains(query) ||
+                "OS & Boot".localizedCaseInsensitiveContains(query) ||
+                "Longhorn Block Storage".localizedCaseInsensitiveContains(query)
+        }
         
         return Group {
             if all.isEmpty {
                 ContentUnavailableView("No Storage Active", systemImage: "externaldrive.badge.xmark", description: Text("Start a node to see allocated disk space"))
+            } else if filtered.isEmpty {
+                ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No storage entries match your search"))
             } else {
                 List {
-                    ForEach(all) { vm in
+                    ForEach(filtered) { vm in
                         Section {
                             StorageFileRow(name: "system.img", size: "\(vm.systemDiskSizeGB) GB", type: "OS & Boot")
                             StorageFileRow(name: "data.img", size: "\(vm.dataDiskSizeGB) GB", type: "Longhorn Block Storage")
@@ -881,129 +1024,59 @@ struct StorageFileRow: View {
 }
 
 struct NetworkListView: View {
+    let search: String
+    @State private var selectedNodeID: String? = nil
     @State private var showConfig = false
+    @State private var listenPortDraft: String = "\(WireGuardManager.shared.listenPort)"
+    @State private var settingsMessage: String?
 
     var body: some View {
-        let vms = VMManager.shared.virtualMachines
-        
-        return List {
-            Section("WireGuard") {
-                LabeledContent("This Host") {
-                    Text("\(WireGuardManager.shared.hostInfo.name) • \(WireGuardManager.shared.publicKeyShort)…")
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                NetworkTopologyView(nodes: topologyNodes, selectedNodeID: $selectedNodeID)
+                    .frame(height: 320)
+                    .frame(maxWidth: .infinity)
+                    .padding(8)
+                    .background(DashboardPalette.panel.opacity(0.35))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(DashboardPalette.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                if let selectedNode {
+                    nodeSettings(for: selectedNode)
+                } else {
+                    ContentUnavailableView(
+                        "No Device Selected",
+                        systemImage: "cursorarrow.click",
+                        description: Text("Click a node in the topology map to edit settings.")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
                 }
-                
-                LabeledContent("Listen Port") {
-                    Text("\(WireGuardManager.shared.listenPort)")
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
+
+                if let settingsMessage {
+                    Text(settingsMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                
-                HStack(spacing: 8) {
-                    Button("Copy Config") { WireGuardManager.shared.copyConfigToClipboard() }
-                    Button("Open") { WireGuardManager.shared.openConfigInWireGuard() }
-                    Button("Reveal") { WireGuardManager.shared.revealConfigInFinder() }
-                }
-                
-                LabeledContent("Cluster Token") {
-                    HStack(spacing: 8) {
-                        TextField("Shared token (must match across Macs)", text: Binding(
-                            get: { VMManager.shared.clusterToken },
-                            set: {
-                                VMManager.shared.clusterToken = $0
-                                WireGuardManager.shared.startDiscovery()
-                            }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(VMManager.shared.clusterToken, forType: .string)
-                        }
-                    }
-                }
-                
+
                 if showConfig {
                     TextEditor(text: .constant(WireGuardManager.shared.exportConfig()))
                         .font(.system(.caption, design: .monospaced))
                         .frame(minHeight: 140)
+                        .padding(10)
+                        .background(DashboardPalette.panel.opacity(0.35))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(DashboardPalette.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
-            
-            if !DiscoveryManager.shared.discovered.isEmpty {
-                Section("Discovered") {
-                    ForEach(DiscoveryManager.shared.discovered) { host in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(host.name)
-                                Text(DiscoveryManager.shared.pairStatusByID[host.id] ?? "Pairing…")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Button("Pair") {
-                                WireGuardManager.shared.pair(discovered: host)
-                            }
-                            .controlSize(.small)
-                        }
-                    }
-                }
-            }
-            
-            if !WireGuardManager.shared.peers.isEmpty {
-                Section("Paired") {
-                    ForEach(WireGuardManager.shared.peers) { peer in
-                        HStack {
-                            Text(peer.name)
-                            Spacer()
-                            Text(peer.addressCIDR)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-            }
-            
-            if !vms.isEmpty {
-                Section("Topology") {
-                    NetworkTopologyView()
-                        .frame(height: 280)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            
-            Section("Nodes") {
-                if vms.isEmpty {
-                    ContentUnavailableView("No Network Active", systemImage: "network.badge.shield.half.filled", description: Text("Deploy nodes to visualize the cluster network"))
-                } else {
-                    ForEach(vms) { vm in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(vm.name)
-                                Spacer()
-                                StatusBadge(state: vm.state)
-                            }
-                            Text("\(vm.networkMode.rawValue) • IP \(vm.ipAddress) • GW \(vm.gateway)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            if vm.networkMode == .bridge, let iface = vm.bridgeInterfaceName {
-                                Text("Bridge \(iface)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-            }
+            .padding(16)
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
         .background(DashboardPalette.surface)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -1012,7 +1085,250 @@ struct NetworkListView: View {
                 }
             }
         }
-        .onAppear { WireGuardManager.shared.startDiscovery() }
+        .onAppear {
+            WireGuardManager.shared.startDiscovery()
+            listenPortDraft = "\(WireGuardManager.shared.listenPort)"
+            if selectedNodeID == nil {
+                selectedNodeID = WireGuardManager.shared.hostInfo.id
+            }
+        }
+        .onChange(of: topologyNodes.map(\.id)) { _, ids in
+            if let current = selectedNodeID, ids.contains(current) {
+                return
+            }
+            selectedNodeID = ids.first
+        }
+    }
+
+    private var query: String {
+        search.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var pairedPeers: [WireGuardManager.Peer] {
+        WireGuardManager.shared.peers.filter { peer in
+            query.isEmpty ||
+            peer.name.localizedCaseInsensitiveContains(query) ||
+            peer.addressCIDR.localizedCaseInsensitiveContains(query) ||
+            "\(peer.endpointHost):\(peer.endpointPort)".localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var discoveredHosts: [DiscoveryManager.DiscoveredHost] {
+        let pairedIDs = Set(WireGuardManager.shared.peers.map(\.id))
+        return DiscoveryManager.shared.discovered.filter { host in
+            !pairedIDs.contains(host.id) &&
+            (query.isEmpty ||
+             host.name.localizedCaseInsensitiveContains(query) ||
+             host.addressCIDR.localizedCaseInsensitiveContains(query) ||
+             "\(host.endpointHost):\(host.endpointPort)".localizedCaseInsensitiveContains(query) ||
+             (DiscoveryManager.shared.pairStatusByID[host.id] ?? "").localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private var topologyNodes: [NetworkTopologyView.TopologyNode] {
+        let local = NetworkTopologyView.TopologyNode(
+            id: WireGuardManager.shared.hostInfo.id,
+            name: WireGuardManager.shared.hostInfo.name,
+            kind: .local
+        )
+        let peers = pairedPeers.map {
+            NetworkTopologyView.TopologyNode(id: $0.id, name: $0.name, kind: .paired)
+        }
+        let discovered = discoveredHosts.map {
+            NetworkTopologyView.TopologyNode(id: $0.id, name: $0.name, kind: .discovered)
+        }
+        return [local] + peers + discovered
+    }
+
+    private var selectedNode: NetworkTopologyView.TopologyNode? {
+        guard let selectedNodeID else { return topologyNodes.first }
+        return topologyNodes.first(where: { $0.id == selectedNodeID }) ?? topologyNodes.first
+    }
+
+    @ViewBuilder
+    private func nodeSettings(for node: NetworkTopologyView.TopologyNode) -> some View {
+        switch node.kind {
+        case .local:
+            localSettings
+        case .paired:
+            pairedSettings(for: node.id)
+        case .discovered:
+            discoveredSettings(for: node.id)
+        }
+    }
+
+    private var localSettings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("This Device")
+                .font(.headline)
+                .foregroundStyle(OverlayTheme.textPrimary)
+
+            LabeledContent("Host") {
+                Text(WireGuardManager.shared.hostInfo.name)
+                    .font(.system(.caption, design: .monospaced))
+            }
+
+            LabeledContent("Address") {
+                Text(WireGuardManager.shared.hostInfo.addressCIDR)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+
+            LabeledContent("Cluster Token") {
+                HStack(spacing: 8) {
+                    TextField("Shared token", text: Binding(
+                        get: { VMManager.shared.clusterToken },
+                        set: {
+                            VMManager.shared.clusterToken = $0
+                            WireGuardManager.shared.startDiscovery()
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(VMManager.shared.clusterToken, forType: .string)
+                    }
+                }
+            }
+
+            LabeledContent("Listen Port") {
+                HStack(spacing: 8) {
+                    TextField("51820", text: $listenPortDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: 110)
+
+                    Button("Apply") {
+                        applyListenPort()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("Copy Config") { WireGuardManager.shared.copyConfigToClipboard() }
+                Button("Open") { WireGuardManager.shared.openConfigInWireGuard() }
+                Button("Reveal") { WireGuardManager.shared.revealConfigInFinder() }
+            }
+            .controlSize(.small)
+        }
+        .padding(14)
+        .background(DashboardPalette.panel.opacity(0.35))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(DashboardPalette.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    @ViewBuilder
+    private func pairedSettings(for id: String) -> some View {
+        if let peer = WireGuardManager.shared.peers.first(where: { $0.id == id }) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Paired Device")
+                    .font(.headline)
+                    .foregroundStyle(OverlayTheme.textPrimary)
+
+                LabeledContent("Name") { Text(peer.name) }
+                LabeledContent("Address") {
+                    Text(peer.addressCIDR)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Endpoint") {
+                    Text("\(peer.endpointHost):\(peer.endpointPort)")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Allowed IPs") {
+                    Text(peer.allowedIPs.joined(separator: ", "))
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+
+                Button("Remove Peer", role: .destructive) {
+                    WireGuardManager.shared.removePeer(id: peer.id)
+                    selectedNodeID = WireGuardManager.shared.hostInfo.id
+                }
+                .controlSize(.small)
+            }
+            .padding(14)
+            .background(DashboardPalette.panel.opacity(0.35))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(DashboardPalette.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        } else {
+            Text("Peer no longer available.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func discoveredSettings(for id: String) -> some View {
+        if let host = DiscoveryManager.shared.discovered.first(where: { $0.id == id }) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Discovered Device")
+                    .font(.headline)
+                    .foregroundStyle(OverlayTheme.textPrimary)
+
+                LabeledContent("Name") { Text(host.name) }
+                LabeledContent("Address") {
+                    Text(host.addressCIDR)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Endpoint") {
+                    Text("\(host.endpointHost):\(host.endpointPort)")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Status") {
+                    Text(DiscoveryManager.shared.pairStatusByID[host.id] ?? "Waiting")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Pair") {
+                        WireGuardManager.shared.pair(discovered: host)
+                    }
+                    .controlSize(.small)
+
+                    Button("Dismiss", role: .destructive) {
+                        DiscoveryManager.shared.removeDiscovered(id: host.id)
+                        selectedNodeID = WireGuardManager.shared.hostInfo.id
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(14)
+            .background(DashboardPalette.panel.opacity(0.35))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(DashboardPalette.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        } else {
+            Text("Discovered device is no longer available.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func applyListenPort() {
+        guard let parsed = Int(listenPortDraft), (1...65535).contains(parsed) else {
+            settingsMessage = "Listen port must be between 1 and 65535."
+            return
+        }
+        WireGuardManager.shared.listenPort = parsed
+        WireGuardManager.shared.startDiscovery()
+        settingsMessage = "Listen port updated."
     }
 }
 

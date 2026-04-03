@@ -210,7 +210,7 @@ final class DiscoveryManager {
         inFlightPeerInfoRequests.insert(host.id)
         lastPeerInfoRequestAt[host.id] = now
 
-        let params = discoveryParameters()
+        let params = peerInfoClientParameters()
         let connection = NWConnection(to: host.endpoint, using: params)
         DispatchQueue.main.async {
             self.pairStatusByID[host.id] = "Connecting…"
@@ -423,6 +423,15 @@ final class DiscoveryManager {
     private func discoveryParameters() -> NWParameters {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
+        return params
+    }
+
+    /// Client-side peer-info requests should prefer a single LAN path.
+    /// This avoids noisy peer-to-peer probing (AWDL/link-local candidates)
+    /// that can produce repeated connection-refused logs for one unavailable peer.
+    private func peerInfoClientParameters() -> NWParameters {
+        let params = NWParameters.tcp
+        params.includePeerToPeer = false
         return params
     }
 }

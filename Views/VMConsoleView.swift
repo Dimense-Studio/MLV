@@ -5,24 +5,31 @@ struct VMConsoleWindow: View {
     let vm: VirtualMachine
     
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(vm.name)
-                    .font(.headline)
-                Spacer()
-                StatusBadge(state: vm.state)
+        ZStack {
+            OverlayCanvasBackground()
+
+            VStack(spacing: 12) {
+                HStack {
+                    Text(vm.name)
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(OverlayTheme.textPrimary)
+                    Spacer()
+                    StatusBadge(state: vm.state)
+                }
+                .padding(14)
+                .overlayPanel(radius: 16)
+
+                if let virtualMachine = vm.vzVirtualMachine {
+                    VMDisplayView(virtualMachine: virtualMachine)
+                        .frame(minHeight: 360)
+                        .overlayPanel(radius: 16)
+                } else {
+                    ContentUnavailableView("Console not available", systemImage: "display")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlayPanel(radius: 16)
+                }
             }
-            .padding()
-            
-            Divider()
-            
-            if let virtualMachine = vm.vzVirtualMachine {
-                VMDisplayView(virtualMachine: virtualMachine)
-                    .frame(minHeight: 360)
-            } else {
-                ContentUnavailableView("Console not available", systemImage: "display")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            .padding(14)
         }
         .frame(minWidth: 900, minHeight: 700)
     }

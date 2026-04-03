@@ -41,6 +41,7 @@
 		300405A22F7FD45300E27D05 /* VMManaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3004059D2F7FD45300E27D05 /* VMManaging.swift */; };
 		300405A32F7FD45300E27D05 /* VMListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A02F7FD45300E27D05 /* VMListViewModel.swift */; };
 		300405A52F7FE25500E27D05 /* AppUpdateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A42F7FE25500E27D05 /* AppUpdateManager.swift */; };
+		300405A82F80002A00E27D05 /* OverlayTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405A72F80002A00E27D05 /* OverlayTheme.swift */; };
 		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -96,6 +97,8 @@
 		3004059D2F7FD45300E27D05 /* VMManaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManaging.swift; sourceTree = "<group>"; };
 		300405A02F7FD45300E27D05 /* VMListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMListViewModel.swift; sourceTree = "<group>"; };
 		300405A42F7FE25500E27D05 /* AppUpdateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateManager.swift; sourceTree = "<group>"; };
+		300405A62F7FF60E00E27D05 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		300405A72F80002A00E27D05 /* OverlayTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayTheme.swift; sourceTree = "<group>"; };
 		30D4DAA22F7578F9003C3565 /* MLV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DAB12F7578FA003C3565 /* MLVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30D4DABB2F7578FA003C3565 /* MLVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -147,6 +150,7 @@
 				3004058B2F7FC14B00E27D05 /* VMConfigFormView.swift */,
 				300405572F7F2B4800E27D05 /* DarkGlassBackground.swift */,
 				300405602F7F2B4800E27D05 /* SymbolImage.swift */,
+				300405A72F80002A00E27D05 /* OverlayTheme.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -246,6 +250,7 @@
 				300405912F7FD3F300E27D05 /* Models */,
 				300405922F7FD3F300E27D05 /* Networking */,
 				300405932F7FD3F300E27D05 /* Utils */,
+				300405A62F7FF60E00E27D05 /* Assets.xcassets */,
 			);
 			sourceTree = "<group>";
 		};
@@ -425,6 +430,7 @@
 				3004057B2F7F2B4800E27D05 /* SymbolImage.swift in Sources */,
 				3004057C2F7F2B4800E27D05 /* TerminalLauncher.swift in Sources */,
 				300405A52F7FE25500E27D05 /* AppUpdateManager.swift in Sources */,
+				300405A82F80002A00E27D05 /* OverlayTheme.swift in Sources */,
 				3004057D2F7F2B4800E27D05 /* UDPPortForwarder.swift in Sources */,
 				3004057E2F7F2B4800E27D05 /* VirtualMachine.swift in Sources */,
 				3004057F2F7F2B4800E27D05 /* VMConfigurationBuilder.swift in Sources */,
