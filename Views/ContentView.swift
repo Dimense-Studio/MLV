@@ -206,8 +206,7 @@ struct ContentView: View {
             }
         case .network:
             if WireGuardManager.shared.hostInfo.name.localizedCaseInsensitiveContains(query) ||
-                WireGuardManager.shared.publicKeyShort.localizedCaseInsensitiveContains(query) ||
-                VMManager.shared.clusterToken.localizedCaseInsensitiveContains(query) {
+                WireGuardManager.shared.publicKeyShort.localizedCaseInsensitiveContains(query) {
                 return true
             }
             if DiscoveryManager.shared.discovered.contains(where: { host in
@@ -1027,7 +1026,6 @@ struct NetworkListView: View {
     let search: String
     @State private var selectedNodeID: String? = nil
     @State private var showConfig = false
-    @State private var listenPortDraft: String = "\(WireGuardManager.shared.listenPort)"
     @State private var settingsMessage: String?
 
     var body: some View {
@@ -1087,7 +1085,6 @@ struct NetworkListView: View {
         }
         .onAppear {
             WireGuardManager.shared.startDiscovery()
-            listenPortDraft = "\(WireGuardManager.shared.listenPort)"
             if selectedNodeID == nil {
                 selectedNodeID = WireGuardManager.shared.hostInfo.id
             }
@@ -1129,13 +1126,24 @@ struct NetworkListView: View {
         let local = NetworkTopologyView.TopologyNode(
             id: WireGuardManager.shared.hostInfo.id,
             name: WireGuardManager.shared.hostInfo.name,
-            kind: .local
+            kind: .local,
+            linkType: localLinkType
         )
         let peers = pairedPeers.map {
-            NetworkTopologyView.TopologyNode(id: $0.id, name: $0.name, kind: .paired)
+            NetworkTopologyView.TopologyNode(
+                id: $0.id,
+                name: $0.name,
+                kind: .paired,
+                linkType: linkType(forEndpointHost: $0.endpointHost)
+            )
         }
         let discovered = discoveredHosts.map {
-            NetworkTopologyView.TopologyNode(id: $0.id, name: $0.name, kind: .discovered)
+            NetworkTopologyView.TopologyNode(
+                id: $0.id,
+                name: $0.name,
+                kind: .discovered,
+                linkType: linkType(forEndpointHost: $0.endpointHost)
+            )
         }
         return [local] + peers + discovered
     }
@@ -1174,37 +1182,10 @@ struct NetworkListView: View {
                     .textSelection(.enabled)
             }
 
-            LabeledContent("Cluster Token") {
-                HStack(spacing: 8) {
-                    TextField("Shared token", text: Binding(
-                        get: { VMManager.shared.clusterToken },
-                        set: {
-                            VMManager.shared.clusterToken = $0
-                            WireGuardManager.shared.startDiscovery()
-                        }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
-
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(VMManager.shared.clusterToken, forType: .string)
-                    }
-                }
-            }
-
             LabeledContent("Listen Port") {
-                HStack(spacing: 8) {
-                    TextField("51820", text: $listenPortDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: 110)
-
-                    Button("Apply") {
-                        applyListenPort()
-                    }
-                    .controlSize(.small)
-                }
+                Text("\(WireGuardManager.shared.listenPort)")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
             }
 
             HStack(spacing: 8) {
@@ -1360,16 +1341,6 @@ struct NetworkListView: View {
         }
     }
 
-    private func applyListenPort() {
-        guard let parsed = Int(listenPortDraft), (1...65535).contains(parsed) else {
-            settingsMessage = "Listen port must be between 1 and 65535."
-            return
-        }
-        WireGuardManager.shared.listenPort = parsed
-        WireGuardManager.shared.startDiscovery()
-        settingsMessage = "Listen port updated."
-    }
-
     private func pairDiscoveredNode(id: String) {
         guard let latest = DiscoveryManager.shared.discovered.first(where: { $0.id == id }) else {
             settingsMessage = "Device is no longer discoverable."
@@ -1384,6 +1355,34 @@ struct NetworkListView: View {
                 settingsMessage = message ?? "Pairing failed."
             }
         }
+    }
+
+    private var localLinkType: NetworkTopologyView.LinkType {
+        let preferred = HostResources.preferredActiveInterfaceType(preferredTypes: [.thunderbolt, .ethernet, .wifi])
+        switch preferred {
+        case .wifi:
+            return .wifi
+        case .ethernet:
+            return .ethernet
+        case .thunderbolt:
+            return .thunderbolt
+        case .unknown:
+            return .unknown
+        }
+    }
+
+    private func linkType(forEndpointHost host: String) -> NetworkTopologyView.LinkType {
+        let h = host.lowercased()
+        if h.isEmpty {
+            return .unknown
+        }
+        if h.contains("thunderbolt") || h.contains("bridge") || h.hasPrefix("169.254.") {
+            return .thunderbolt
+        }
+        if h.hasPrefix("fe80:") || h.contains("%en0") || h.contains("wifi") {
+            return .wifi
+        }
+        return .ethernet
     }
 }
 

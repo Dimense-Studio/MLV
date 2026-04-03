@@ -1,6 +1,22 @@
 import SwiftUI
 
 struct NetworkTopologyView: View {
+    enum LinkType: Hashable {
+        case wifi
+        case ethernet
+        case thunderbolt
+        case unknown
+
+        var icon: String {
+            switch self {
+            case .wifi: return "wifi"
+            case .ethernet: return "cable.connector"
+            case .thunderbolt: return "bolt.horizontal.fill"
+            case .unknown: return "network"
+            }
+        }
+    }
+
     struct TopologyNode: Identifiable, Hashable {
         enum Kind: Hashable {
             case local
@@ -11,12 +27,14 @@ struct NetworkTopologyView: View {
         let id: String
         let name: String
         let kind: Kind
+        let linkType: LinkType
     }
 
     let nodes: [TopologyNode]
     @Binding var selectedNodeID: String?
     
     @State private var hoveredNodeID: String? = nil
+    @State private var flowPhase: CGFloat = 0
     
     var nodeMetrics: [String: (latencyMS: Int, throughputMbps: Int)] {
         var dict: [String: (Int, Int)] = [:]
@@ -36,12 +54,47 @@ struct NetworkTopologyView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.22), Color.black.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(OverlayTheme.border.opacity(0.45), lineWidth: 0.8)
+                    )
+
                 ForEach(connections) { conn in
                     let fromPoint = position(for: conn.a, in: geo.size)
                     let toPoint = position(for: conn.b, in: geo.size)
                     connectionLine(from: fromPoint,
                                    to: toPoint)
-                        .stroke(OverlayTheme.textSecondary.opacity(0.26), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+                        .stroke(OverlayTheme.textSecondary.opacity(0.28), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+
+                    connectionLine(from: fromPoint, to: toPoint)
+                        .stroke(OverlayTheme.accent.opacity(0.12), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+
+                    let seed = CGFloat(abs(conn.id.hashValue % 100)) / 100
+                    let t1 = wrappedUnit(flowPhase + seed)
+                    let t2 = wrappedUnit(flowPhase + seed + 0.45)
+                    let pulse1 = point(from: fromPoint, to: toPoint, t: t1)
+                    let pulse2 = point(from: fromPoint, to: toPoint, t: t2)
+
+                    TrafficDot()
+                        .position(pulse1)
+                    TrafficDot(opacity: 0.45, size: 3)
+                        .position(pulse2)
+
+                    if let remote = nodes[safe: conn.b] {
+                        LinkBadge(
+                            icon: remote.linkType.icon,
+                            throughputMbps: nodeMetrics[remote.id]?.throughputMbps
+                        )
+                            .position(CGPoint(x: (fromPoint.x + toPoint.x) * 0.5, y: (fromPoint.y + toPoint.y) * 0.5))
+                    }
                 }
                 ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
                     let pos = position(for: index, in: geo.size)
@@ -62,6 +115,12 @@ struct NetworkTopologyView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.35), value: nodes.map(\.id))
+            .onAppear {
+                guard flowPhase == 0 else { return }
+                withAnimation(.linear(duration: 2.2).repeatForever(autoreverses: false)) {
+                    flowPhase = 1
+                }
+            }
         }
     }
     
@@ -87,6 +146,18 @@ struct NetworkTopologyView: View {
         path.addLine(to: to)
         return path
     }
+
+    private func point(from: CGPoint, to: CGPoint, t: CGFloat) -> CGPoint {
+        CGPoint(
+            x: from.x + ((to.x - from.x) * t),
+            y: from.y + ((to.y - from.y) * t)
+        )
+    }
+
+    private func wrappedUnit(_ v: CGFloat) -> CGFloat {
+        let x = v - floor(v)
+        return x < 0 ? x + 1 : x
+    }
 }
 
 private struct NodeCircle: View {
@@ -101,11 +172,11 @@ private struct NodeCircle: View {
             ZStack {
                 Circle()
                     .fill(dotColor)
-                    .frame(width: isHovered ? 11 : 9, height: isHovered ? 11 : 9)
+                    .frame(width: isHovered ? 12 : 10, height: isHovered ? 12 : 10)
                 if kind == .local || isSelected {
                     Circle()
                         .stroke(ringColor, lineWidth: isSelected ? 1.4 : 1)
-                        .frame(width: isHovered ? 20 : 16, height: isHovered ? 20 : 16)
+                        .frame(width: isHovered ? 22 : 18, height: isHovered ? 22 : 18)
                 }
             }
             Text(name)
@@ -143,6 +214,39 @@ private struct NodeCircle: View {
     }
 }
 
+private struct LinkBadge: View {
+    let icon: String
+    let throughputMbps: Int?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+            if let throughputMbps {
+                Text("\(throughputMbps)")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+            }
+        }
+        .foregroundStyle(OverlayTheme.textSecondary.opacity(0.95))
+        .padding(.horizontal, 5)
+        .padding(.vertical, 3)
+        .background(Color.black.opacity(0.45), in: Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(OverlayTheme.border.opacity(0.6), lineWidth: 0.7))
+    }
+}
+
+private struct TrafficDot: View {
+    var opacity: Double = 0.85
+    var size: CGFloat = 4
+
+    var body: some View {
+        Circle()
+            .fill(OverlayTheme.accent.opacity(opacity))
+            .frame(width: size, height: size)
+            .shadow(color: OverlayTheme.accent.opacity(0.4), radius: 2, x: 0, y: 0)
+    }
+}
+
 #Preview {
     _NetworkTopologyPreview()
         .frame(width: 360, height: 260)
@@ -155,10 +259,10 @@ private struct _NetworkTopologyPreview: View {
     var body: some View {
         NetworkTopologyView(
             nodes: [
-                .init(id: "local", name: "This Mac", kind: .local),
-                .init(id: "peer-1", name: "Studio Mac", kind: .paired),
-                .init(id: "peer-2", name: "Lab Mac", kind: .paired),
-                .init(id: "discovered-1", name: "Nearby Mac", kind: .discovered)
+                .init(id: "local", name: "This Mac", kind: .local, linkType: .ethernet),
+                .init(id: "peer-1", name: "Studio Mac", kind: .paired, linkType: .wifi),
+                .init(id: "peer-2", name: "Lab Mac", kind: .paired, linkType: .thunderbolt),
+                .init(id: "discovered-1", name: "Nearby Mac", kind: .discovered, linkType: .unknown)
             ],
             selectedNodeID: $selectedNodeID
         )

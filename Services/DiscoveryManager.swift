@@ -5,9 +5,7 @@ import CryptoKit
 
 private nonisolated struct DiscoveryRequest: Codable {
     let nonceBase64: String
-    let tokenHashBase64: String
     let requesterHostInfo: WireGuardManager.HostInfo
-    let requesterSignatureBase64: String
 }
 
 private nonisolated struct DiscoveryResponse: Codable {
@@ -48,7 +46,6 @@ final class DiscoveryManager {
     private var browser: NWBrowser?
     private var myID: String?
     private var isRunning = false
-    private var clusterToken: String = ""
     private var inFlightPeerInfoRequests: Set<String> = []
     private var lastPeerInfoRequestAt: [String: Date] = [:]
     private let peerInfoRequestCooldown: TimeInterval = 2.0
@@ -63,15 +60,13 @@ final class DiscoveryManager {
 
     private init() {}
 
-    func start(myInfo: WireGuardManager.HostInfo, clusterToken: String) {
+    func start(myInfo: WireGuardManager.HostInfo) {
         if isRunning {
             myID = myInfo.id
-            self.clusterToken = clusterToken
             return
         }
         isRunning = true
         myID = myInfo.id
-        self.clusterToken = clusterToken
         startListener(myInfo: myInfo)
         startBrowser()
     }
@@ -104,26 +99,7 @@ final class DiscoveryManager {
                 connection.start(queue: .global(qos: .utility))
                 self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (req: DiscoveryRequest) in
                     Task { @MainActor in
-                        guard let nonce = Data(base64Encoded: req.nonceBase64),
-                              let tokenHash = Data(base64Encoded: req.tokenHashBase64),
-                              let requesterSig = Data(base64Encoded: req.requesterSignatureBase64) else {
-                            connection.cancel()
-                            return
-                        }
-                        
-                        let expectedHash = Data(SHA256.hash(data: Data(self.clusterToken.utf8)))
-                        guard tokenHash == expectedHash else {
-                            connection.cancel()
-                            return
-                        }
-                        
-                        let reqInfoData = req.requesterHostInfo.jsonData()
-                        var reqPayload = Data()
-                        reqPayload.append(nonce)
-                        reqPayload.append(reqInfoData)
-                        let tokenKey = SymmetricKey(data: Data(self.clusterToken.utf8))
-                        let reqExpected = HMAC<SHA256>.authenticationCode(for: reqPayload, using: tokenKey)
-                        guard Data(reqExpected) == requesterSig else {
+                        guard Data(base64Encoded: req.nonceBase64) != nil else {
                             connection.cancel()
                             return
                         }
@@ -155,17 +131,11 @@ final class DiscoveryManager {
                         if self.approvedRequesterIDs.contains(requester.id) {
                             WireGuardManager.shared.addOrUpdatePeer(from: requester)
 
-                            let infoData = myInfo.jsonData()
-                            var payload = Data()
-                            payload.append(nonce)
-                            payload.append(infoData)
-                            let sig = HMAC<SHA256>.authenticationCode(for: payload, using: tokenKey)
-
                             let resp = DiscoveryResponse(
                                 status: "approved",
                                 hostInfo: myInfo,
                                 nonceBase64: req.nonceBase64,
-                                signatureBase64: Data(sig).base64EncodedString(),
+                                signatureBase64: nil,
                                 message: nil
                             )
                             self.sendJSONLine(connection: connection, value: resp) {
@@ -333,21 +303,11 @@ final class DiscoveryManager {
         }
 
         let nonce = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-        let tokenHash = Data(SHA256.hash(data: Data(clusterToken.utf8)))
-        
         let requesterInfo = WireGuardManager.shared.hostInfo
-        let requesterInfoData = requesterInfo.jsonData()
-        var reqPayload = Data()
-        reqPayload.append(nonce)
-        reqPayload.append(requesterInfoData)
-        let tokenKey = SymmetricKey(data: Data(clusterToken.utf8))
-        let requesterSig = HMAC<SHA256>.authenticationCode(for: reqPayload, using: tokenKey)
         
         let req = DiscoveryRequest(
             nonceBase64: nonce.base64EncodedString(),
-            tokenHashBase64: tokenHash.base64EncodedString(),
-            requesterHostInfo: requesterInfo,
-            requesterSignatureBase64: Data(requesterSig).base64EncodedString()
+            requesterHostInfo: requesterInfo
         )
 
         var didStartExchange = false
@@ -393,22 +353,8 @@ final class DiscoveryManager {
 
                             guard resp.status == "approved",
                                   let remoteInfo = resp.hostInfo,
-                                  let infoData = try? JSONEncoder().encode(remoteInfo),
-                                  let respNonce = Data(base64Encoded: resp.nonceBase64),
-                                  let signatureBase64 = resp.signatureBase64,
-                                  let sigData = Data(base64Encoded: signatureBase64) else {
+                                  Data(base64Encoded: resp.nonceBase64) != nil else {
                                 self.pairStatusByID[host.id] = "Failed: invalid approval"
-                                finish(nil)
-                                return
-                            }
-
-                            var payload = Data()
-                            payload.append(respNonce)
-                            payload.append(infoData)
-                            let key = SymmetricKey(data: Data(self.clusterToken.utf8))
-                            let expected = HMAC<SHA256>.authenticationCode(for: payload, using: key)
-                            guard Data(expected) == sigData else {
-                                self.pairStatusByID[host.id] = "Failed: auth"
                                 finish(nil)
                                 return
                             }

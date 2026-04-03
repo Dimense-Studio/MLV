@@ -115,6 +115,16 @@ struct HostResources {
         }
         return active.compactMap { ipAddress(for: $0.bsdName) }.first
     }
+
+    static func preferredActiveInterfaceType(preferredTypes: [NetworkInterface.InterfaceType]) -> NetworkInterface.InterfaceType {
+        let active = getNetworkInterfaces().filter { $0.isActive }
+        for t in preferredTypes {
+            if active.contains(where: { $0.type == t }) {
+                return t
+            }
+        }
+        return active.first?.type ?? .unknown
+    }
     
     private static func getIPAddress(for interface: String) -> String? {
         var address: String?

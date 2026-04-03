@@ -43,7 +43,6 @@ final class WireGuardManager {
     private let keyNodeID = "MLV_Node_ID"
     private let keyPrivateKey = "MLV_WG_PrivateKey"
     private let keyPeers = "MLV_WG_Peers"
-    private let keyListenPort = "MLV_WG_ListenPort"
     private let keyInterfaceAddress = "MLV_WG_InterfaceAddressCIDR"
     private let keyLastConfigPath = "MLV_WG_LastConfigPath"
 
@@ -88,13 +87,7 @@ final class WireGuardManager {
     }
 
     var listenPort: Int {
-        get {
-            let port = UserDefaults.standard.integer(forKey: keyListenPort)
-            return port == 0 ? 51820 : port
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: keyListenPort)
-        }
+        51820
     }
 
     var publicKeyBase64: String {
@@ -106,8 +99,7 @@ final class WireGuardManager {
     /// Starts peer discovery and pairing process.
     /// Pairing is now always automatic and requires no user action.
     func startDiscovery() {
-        let token = VMManager.shared.clusterToken
-        DiscoveryManager.shared.start(myInfo: hostInfo, clusterToken: token)
+        DiscoveryManager.shared.start(myInfo: hostInfo)
     }
 
     func pair(
@@ -244,7 +236,7 @@ final class WireGuardManager {
               let shared = try? privateKey.sharedSecretFromKeyAgreement(with: peer) else {
             return nil
         }
-        let salt = Data(VMManager.shared.clusterToken.utf8)
+        let salt = Data("MLV_CLUSTER_STATIC_SALT_v1".utf8)
         let info = Data("MLV_CLUSTER_RPC".utf8)
         return shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt, sharedInfo: info, outputByteCount: 32)
     }
