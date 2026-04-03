@@ -32,7 +32,6 @@ final class DiscoveryManager {
     static let shared = DiscoveryManager()
 
     private let serviceType = "_mlv._tcp"
-    private let port: NWEndpoint.Port = 7123
 
     private var listener: NWListener?
     private var browser: NWBrowser?
@@ -76,7 +75,9 @@ final class DiscoveryManager {
         if listener != nil { return }
         let params = discoveryParameters()
         do {
-            let listener = try NWListener(using: params, on: port)
+            // Use an available port picked by the OS and publish it via Bonjour.
+            // This avoids hard failures when a fixed port is unavailable.
+            let listener = try NWListener(using: params)
             listener.service = NWListener.Service(
                 name: myInfo.id,
                 type: serviceType,
@@ -132,7 +133,19 @@ final class DiscoveryManager {
                 }
             }
 
-            listener.stateUpdateHandler = { _ in }
+            listener.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                if case .failed = state {
+                    self.listener?.cancel()
+                    self.listener = nil
+                    guard self.isRunning, let id = self.myID else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        guard self.isRunning else { return }
+                        self.startListener(myInfo: WireGuardManager.shared.hostInfo)
+                        self.myID = id
+                    }
+                }
+            }
             listener.start(queue: .global(qos: .utility))
             self.listener = listener
         } catch {
@@ -169,7 +182,18 @@ final class DiscoveryManager {
             }
         }
 
-        browser.stateUpdateHandler = { _ in }
+        browser.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            if case .failed = state {
+                self.browser?.cancel()
+                self.browser = nil
+                guard self.isRunning else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    guard self.isRunning else { return }
+                    self.startBrowser()
+                }
+            }
+        }
         browser.start(queue: .global(qos: .utility))
         self.browser = browser
     }
