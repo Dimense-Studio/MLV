@@ -1419,6 +1419,12 @@ struct NetworkListView: View {
                         let result = try await ClusterManager.shared.runBandwidthTest(to: peer, senderName: senderName)
                         await MainActor.run {
                             settingsMessage = "100 MB -> \(result.receiverName): \(Int(result.mbps)) MB/s"
+                            AppNotifications.shared.notify(
+                                id: "cluster-test-sent-\(result.receiverID)",
+                                title: "Cluster Test Sent",
+                                body: "100 MB to \(result.receiverName): \(Int(result.mbps)) MB/s",
+                                minimumInterval: 1
+                            )
                         }
                     } catch {
                         await MainActor.run {
