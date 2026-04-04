@@ -359,8 +359,42 @@ final class DiscoveryManager {
                                 return
                             }
 
+                            let resolvedHost = Self.hostString(from: connection.currentPath?.remoteEndpoint)
+                            let reachableInfo: WireGuardManager.HostInfo
+                            if let resolvedHost, !resolvedHost.isEmpty {
+                                reachableInfo = WireGuardManager.HostInfo(
+                                    id: remoteInfo.id,
+                                    name: remoteInfo.name,
+                                    publicKey: remoteInfo.publicKey,
+                                    endpointHost: resolvedHost,
+                                    endpointPort: remoteInfo.endpointPort,
+                                    addressCIDR: remoteInfo.addressCIDR,
+                                    advertisedRoutes: remoteInfo.advertisedRoutes,
+                                    cpuCount: remoteInfo.cpuCount,
+                                    memoryGB: remoteInfo.memoryGB,
+                                    freeDiskGB: remoteInfo.freeDiskGB
+                                )
+                            } else {
+                                reachableInfo = remoteInfo
+                            }
+
+                            if let idx = self.discovered.firstIndex(where: { $0.id == host.id }) {
+                                let existing = self.discovered[idx]
+                                self.discovered[idx] = DiscoveredHost(
+                                    id: existing.id,
+                                    name: reachableInfo.name,
+                                    endpoint: existing.endpoint,
+                                    publicKey: reachableInfo.publicKey,
+                                    endpointHost: reachableInfo.endpointHost,
+                                    endpointPort: reachableInfo.endpointPort,
+                                    addressCIDR: reachableInfo.addressCIDR,
+                                    lastSeen: Date()
+                                )
+                                self.onUpdate?(self.discovered)
+                            }
+
                             self.pairStatusByID[host.id] = "Paired"
-                            finish(remoteInfo)
+                            finish(reachableInfo)
                         }
                     },
                     onFailure: {
@@ -486,6 +520,20 @@ final class DiscoveryManager {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
         return params
+    }
+
+    private static func hostString(from endpoint: NWEndpoint?) -> String? {
+        guard let endpoint else { return nil }
+        switch endpoint {
+        case .hostPort(let host, _):
+            let raw = host.debugDescription
+            if raw.hasPrefix("[") && raw.hasSuffix("]") {
+                return String(raw.dropFirst().dropLast())
+            }
+            return raw
+        default:
+            return nil
+        }
     }
 
     /// Client-side peer-info requests allow peer-to-peer transport so

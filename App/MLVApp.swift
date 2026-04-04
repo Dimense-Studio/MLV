@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             AppNotifications.shared.requestIfNeeded()
             LoginItemManager.shared.setEnabled(AppSettingsStore.shared.launchAtLogin)
+            await VMManager.shared.handleRuntimeModeChange()
             VMManager.shared.refreshBackgroundExecution()
             VMManager.shared.autoStartVMsIfNeeded()
             ClusterManager.shared.start()

@@ -1,14 +1,53 @@
 import SwiftUI
 
 enum OverlayTheme {
-    static let background = Color.black
-    static let backgroundEdge = Color(red: 0.02, green: 0.02, blue: 0.02)
-    static let panel = Color.white.opacity(0.08)
-    static let panelStrong = Color.white.opacity(0.13)
-    static let border = Color.white.opacity(0.10)
-    static let textPrimary = Color.white.opacity(0.92)
-    static let textSecondary = Color.white.opacity(0.64)
-    static let accent = Color.white.opacity(0.90)
+    private static var isContainerMode: Bool {
+        UserDefaults.standard.string(forKey: "MLV_WorkloadRuntime") == "appleContainer"
+    }
+
+    static var background: Color {
+        return Color.black
+    }
+
+    static var backgroundEdge: Color {
+        return Color.black
+    }
+
+    static var panel: Color {
+        if isContainerMode {
+            return Color(red: 0.42, green: 0.70, blue: 0.98).opacity(0.20)
+        }
+        return Color(red: 0.19, green: 0.19, blue: 0.19).opacity(0.95)
+    }
+
+    static var panelStrong: Color {
+        if isContainerMode {
+            return Color(red: 0.52, green: 0.79, blue: 1.0).opacity(0.28)
+        }
+        return Color(red: 0.24, green: 0.24, blue: 0.24).opacity(0.96)
+    }
+
+    static var border: Color {
+        if isContainerMode {
+            return Color(red: 0.66, green: 0.86, blue: 1.0).opacity(0.55)
+        }
+        return Color.white.opacity(0.14)
+    }
+
+    static var textPrimary: Color {
+        Color.white.opacity(0.92)
+    }
+
+    static var textSecondary: Color {
+        Color.white.opacity(0.64)
+    }
+
+    static var accent: Color {
+        if isContainerMode {
+            return Color(red: 0.57, green: 0.81, blue: 1.0)
+        }
+        return Color.white.opacity(0.90)
+    }
 }
 
 struct OverlayCanvasBackground: View {

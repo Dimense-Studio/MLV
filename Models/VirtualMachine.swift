@@ -222,6 +222,9 @@ class VirtualMachine: Identifiable {
     var lastGuestCPUIdleTicks: UInt64? = nil
     var lastMonitoredProcessTicks: UInt64? = nil
     var hostServicePID: Int? = nil
+    var containerImageReference: String = "" {
+        didSet { persist() }
+    }
     
     // Networking Info
     var ipAddress: String = "Detecting..."

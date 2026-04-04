@@ -34,6 +34,7 @@ struct VMMetadata: Codable {
     let terminalConsoleHostPort: Int?
     let monitoredProcessPID: Int?
     let monitoredProcessName: String?
+    let containerImageReference: String?
     
     init(
         id: UUID,
@@ -67,7 +68,8 @@ struct VMMetadata: Codable {
         autoStartOnLaunch: Bool?,
         terminalConsoleHostPort: Int?,
         monitoredProcessPID: Int?,
-        monitoredProcessName: String?
+        monitoredProcessName: String?,
+        containerImageReference: String?
     ) {
         self.id = id
         self.name = name
@@ -101,6 +103,7 @@ struct VMMetadata: Codable {
         self.terminalConsoleHostPort = terminalConsoleHostPort
         self.monitoredProcessPID = monitoredProcessPID
         self.monitoredProcessName = monitoredProcessName
+        self.containerImageReference = containerImageReference
     }
 }
 
@@ -156,7 +159,8 @@ class VMStatePersistence {
                     autoStartOnLaunch: vm.autoStartOnLaunch,
                     terminalConsoleHostPort: vm.terminalConsoleHostPort,
                     monitoredProcessPID: vm.monitoredProcessPID,
-                    monitoredProcessName: vm.monitoredProcessName
+                    monitoredProcessName: vm.monitoredProcessName,
+                    containerImageReference: vm.containerImageReference
                 )
             }
             do {

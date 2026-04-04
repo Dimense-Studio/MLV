@@ -79,12 +79,18 @@ struct ContentView: View {
     @State private var errorMessage: String? = nil
     @State private var showingError = false
     @State private var selectedTab: ClusterTab = .vms
+    @State private var settings = AppSettingsStore.shared
+    
+    private var isContainerMode: Bool {
+        settings.workloadRuntime == .appleContainer
+    }
     
     enum ClusterTab: String, CaseIterable {
         case vms = "Virtual Machines"
         case pods = "Kubernetes Pods"
         case storage = "Distributed Storage"
         case network = "Network Topology"
+        case images = "Images"
         
         var icon: String {
             switch self {
@@ -92,6 +98,7 @@ struct ContentView: View {
             case .pods: return "shippingbox.fill"
             case .storage: return "externaldrive.connected.to.line.below"
             case .network: return "network"
+            case .images: return "square.stack.3d.up"
             }
         }
     }
@@ -106,7 +113,7 @@ struct ContentView: View {
                     switch selectedTab {
                     case .vms:
                         VMListView(search: searchText)
-                            .navigationTitle("Virtual Machines")
+                            .navigationTitle(isContainerMode ? "Containers" : "Virtual Machines")
                     case .pods:
                         PodsListView(search: searchText)
                             .navigationTitle("Kubernetes Pods")
@@ -116,6 +123,9 @@ struct ContentView: View {
                     case .network:
                         NetworkListView(search: searchText)
                             .navigationTitle("Network Topology")
+                    case .images:
+                        ImagesRepositoryView(search: searchText)
+                            .navigationTitle("Container Images")
                     }
                 }
                 .padding(.leading, 64)
@@ -123,6 +133,7 @@ struct ContentView: View {
 
                 OverlaySidebar(
                     selectedTab: $selectedTab,
+                    isContainerMode: isContainerMode,
                     isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
                     onAuthorizeISO: { showingISOImporter = true }
                 )
@@ -131,6 +142,21 @@ struct ContentView: View {
             }
             .searchable(text: $searchText)
             .animation(.easeInOut(duration: 0.22), value: selectedTab)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        settings.workloadRuntime = settings.workloadRuntime == .appleContainer ? .virtualization : .appleContainer
+                    } label: {
+                        Label(
+                            settings.workloadRuntime == .appleContainer ? "Container Mode" : "VM Mode",
+                            systemImage: settings.workloadRuntime == .appleContainer ? "shippingbox.fill" : "macwindow"
+                        )
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(settings.workloadRuntime == .appleContainer ? Color.blue.opacity(0.9) : OverlayTheme.textSecondary)
+                    }
+                    .help("Switch Runtime")
+                }
+            }
         }
         .fileImporter(
             isPresented: $showingISOImporter,
@@ -231,19 +257,30 @@ struct ContentView: View {
                 vm.gateway.localizedCaseInsensitiveContains(query) ||
                 (vm.bridgeInterfaceName ?? "").localizedCaseInsensitiveContains(query)
             }
+        case .images:
+            guard isContainerMode else { return false }
+            return query.localizedCaseInsensitiveContains("image") || query.localizedCaseInsensitiveContains("container")
         }
     }
 }
 
 private struct OverlaySidebar: View {
     @Binding var selectedTab: ContentView.ClusterTab
+    let isContainerMode: Bool
     let isISOAuthorized: Bool
     let onAuthorizeISO: () -> Void
+    
+    private var visibleTabs: [ContentView.ClusterTab] {
+        if isContainerMode {
+            return [.vms, .pods, .storage, .network, .images]
+        }
+        return [.vms, .pods, .storage, .network]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(ContentView.ClusterTab.allCases, id: \.self) { tab in
+                ForEach(visibleTabs, id: \.self) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
@@ -253,34 +290,36 @@ private struct OverlaySidebar: View {
                             .frame(width: 34, height: 34)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(selectedTab == tab ? Color.black.opacity(0.95) : Color.black.opacity(0.88))
+                                    .fill(selectedTab == tab ? OverlayTheme.panelStrong : OverlayTheme.panel)
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(Color.white.opacity(selectedTab == tab ? 0.24 : 0.10), lineWidth: 1)
+                                    .stroke(OverlayTheme.border.opacity(selectedTab == tab ? 1.0 : 0.75), lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(tab.rawValue)
+                    .help(tab == .vms ? (isContainerMode ? "Containers" : "Virtual Machines") : tab.rawValue)
                 }
             }
 
-            Button(action: onAuthorizeISO) {
-                Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.black.opacity(0.9))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.white.opacity(isISOAuthorized ? 0.22 : 0.10), lineWidth: 1)
-                    )
+            if !isContainerMode {
+                Button(action: onAuthorizeISO) {
+                    Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(OverlayTheme.panel)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(OverlayTheme.border.opacity(isISOAuthorized ? 1.0 : 0.75), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
             }
-            .buttonStyle(.plain)
-            .help(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
 
             Spacer(minLength: 0)
         }
@@ -297,6 +336,10 @@ struct VMListView: View {
     @State private var editingVM: VirtualMachine? = nil
     let search: String
     @State private var viewModel = VMListViewModel()
+    
+    private var isContainerMode: Bool {
+        AppSettingsStore.shared.workloadRuntime == .appleContainer
+    }
     
     var body: some View {
         let snapshot = viewModel.snapshot(search: search)
@@ -323,7 +366,7 @@ struct VMListView: View {
                             Divider().opacity(0.07)
                             DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(snapshot.averageMemoryUsage)%", accent: DashboardPalette.accentSecondary)
                             Divider().opacity(0.07)
-                            DashboardMetricTile(icon: "server.rack", title: "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentTertiary)
+                            DashboardMetricTile(icon: "server.rack", title: isContainerMode ? "Containers" : "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentTertiary)
                             Divider().opacity(0.07)
                             DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(snapshot.runningCount)", accent: DashboardPalette.accentSecondary)
                         }
@@ -338,6 +381,7 @@ struct VMListView: View {
                             } else {
                                 ForEach(snapshot.filtered) { vm in
                                     VMRowCompact(vm: vm, onDoubleClick: { vm in
+                                        guard !isContainerMode else { return }
                                         NSApp.activate(ignoringOtherApps: true)
                                         NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
                                     }, onEdit: { vm in
@@ -393,7 +437,7 @@ struct VMListView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.borderless)
-                .help("Add Node")
+                .help(isContainerMode ? "Add Container" : "Add Node")
             }
         }
     }
@@ -435,6 +479,10 @@ struct VMRowCompact: View {
     }
     
     @State private var showContextDeleteConfirm = false
+    
+    private var isContainerMode: Bool {
+        AppSettingsStore.shared.workloadRuntime == .appleContainer
+    }
     
     var body: some View {
         HStack(spacing: 14) {
@@ -491,19 +539,19 @@ struct VMRowCompact: View {
         .contextMenu {
             Button {
                 onEdit?(vm)
-            } label: { Label("Edit VM", systemImage: "slider.horizontal.3") }
+            } label: { Label(isContainerMode ? "Edit Container" : "Edit VM", systemImage: "slider.horizontal.3") }
             Divider()
             if vm.state == .stopped {
                 Button {
                     Task { try? await VMManager.shared.startVM(vm) }
-                } label: { Label("Start", systemImage: "play.fill") }
+                } label: { Label(isContainerMode ? "Start Container" : "Start", systemImage: "play.fill") }
             } else {
                 Button {
                     Task { try? await VMManager.shared.stopVM(vm) }
-                } label: { Label("Stop", systemImage: "power") }
+                } label: { Label(isContainerMode ? "Stop Container" : "Stop", systemImage: "power") }
                 Button {
                     Task { try? await VMManager.shared.restartVM(vm) }
-                } label: { Label("Restart", systemImage: "arrow.clockwise") }
+                } label: { Label(isContainerMode ? "Restart Container" : "Restart", systemImage: "arrow.clockwise") }
             }
             Divider()
             Button {
@@ -516,18 +564,20 @@ struct VMRowCompact: View {
             Divider()
             Button(role: .destructive) {
                 showContextDeleteConfirm = true
-            } label: { Label("Delete VM and Disks…", systemImage: "trash") }
+            } label: { Label(isContainerMode ? "Delete Container Workload…" : "Delete VM and Disks…", systemImage: "trash") }
         }
         .confirmationDialog(
             "Delete \(vm.name)?",
             isPresented: $showContextDeleteConfirm
         ) {
-            Button("Delete VM and all Disks", role: .destructive) {
+            Button(isContainerMode ? "Delete Container Workload" : "Delete VM and all Disks", role: .destructive) {
                 VMManager.shared.removeVM(vm)
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This will permanently delete the virtual machine and all associated disk images !")
+            Text(isContainerMode
+                 ? "This will permanently delete the container workload from Apple container runtime."
+                 : "This will permanently delete the virtual machine and all associated disk images !")
         }
     }
 
@@ -930,6 +980,198 @@ struct ContainerRow: View {
                 .stroke(DashboardPalette.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct ImagesRepositoryView: View {
+    let search: String
+
+    @State private var images: [ContainerImageInfo] = []
+    @State private var isLoading = false
+    @State private var pullReference: String = ""
+    @State private var pendingDelete: ContainerImageInfo? = nil
+    @State private var errorMessage: String? = nil
+    @State private var isPullingImage = false
+    @State private var pullProgress: Double = 0
+    @State private var pullProgressDetail: String = ""
+
+    private var query: String {
+        search.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredImages: [ContainerImageInfo] {
+        guard !query.isEmpty else { return images }
+        return images.filter {
+            $0.reference.localizedCaseInsensitiveContains(query) ||
+            $0.imageID.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            DashboardPanel {
+                HStack(spacing: 10) {
+                    TextField("Pull image (e.g. ubuntu:24.04)", text: $pullReference)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    Button("Pull") {
+                        pullImage()
+                    }
+                    .disabled(pullReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
+                    Button("Refresh") {
+                        refreshImages()
+                    }
+                    .disabled(isLoading)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if isPullingImage {
+                DashboardPanel {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView(value: pullProgress, total: 1.0)
+                        HStack {
+                            Text("Pulling image...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(Int(pullProgress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        if !pullProgressDetail.isEmpty {
+                            Text(pullProgressDetail)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+
+            if isLoading && images.isEmpty {
+                ProgressView("Loading container images...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filteredImages.isEmpty {
+                ContentUnavailableView(
+                    "No Images",
+                    systemImage: "square.stack.3d.up.slash",
+                    description: Text("Pull images with the field above, then manage them here.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(filteredImages) { image in
+                        HStack(spacing: 12) {
+                            Image(systemName: "shippingbox")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(image.reference)
+                                    .font(.system(.body, design: .monospaced))
+                                Text(image.imageID.isEmpty ? "id: unknown" : image.imageID)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(image.size.isEmpty ? "-" : image.size)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button(role: .destructive) {
+                                pendingDelete = image
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .padding(16)
+        .background(DashboardPalette.surface)
+        .onAppear {
+            refreshImages()
+        }
+        .confirmationDialog(
+            "Delete image?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let image = pendingDelete {
+                Button("Delete \(image.reference)", role: .destructive) {
+                    deleteImage(image)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Image will be removed from local Apple container repository.")
+        }
+    }
+
+    private func refreshImages() {
+        isLoading = true
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                images = try await VMManager.shared.listContainerImages()
+            } catch {
+                errorMessage = "Failed to list images: \(error.localizedDescription)"
+            }
+            isLoading = false
+        }
+    }
+
+    private func pullImage() {
+        let reference = pullReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reference.isEmpty else { return }
+        isLoading = true
+        isPullingImage = true
+        pullProgress = 0
+        pullProgressDetail = ""
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                try await VMManager.shared.pullContainerImage(reference: reference) { progress, detail in
+                    pullProgress = max(pullProgress, progress)
+                    pullProgressDetail = detail
+                }
+                pullProgress = 1.0
+                pullReference = ""
+                images = try await VMManager.shared.listContainerImages()
+            } catch {
+                errorMessage = "Failed to pull image: \(error.localizedDescription)"
+            }
+            isPullingImage = false
+            isLoading = false
+        }
+    }
+
+    private func deleteImage(_ image: ContainerImageInfo) {
+        isLoading = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer {
+                pendingDelete = nil
+                isLoading = false
+            }
+            do {
+                try await VMManager.shared.deleteContainerImage(reference: image.reference)
+                images = try await VMManager.shared.listContainerImages()
+            } catch {
+                errorMessage = "Failed to delete image: \(error.localizedDescription)"
+            }
+        }
     }
 }
 
