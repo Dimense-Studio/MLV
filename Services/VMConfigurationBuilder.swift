@@ -5,6 +5,7 @@ import os
 class VMConfigurationBuilder {
     static let shared = VMConfigurationBuilder()
     private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMConfigBuilder")
+    private let sharedFolderMountTag = "mlvshare"
     
     func build(for vm: VirtualMachine) async throws -> VZVirtualMachineConfiguration {
         let config = VZVirtualMachineConfiguration()
@@ -125,6 +126,16 @@ class VMConfigurationBuilder {
         
         config.keyboards = [VZUSBKeyboardConfiguration()]
         config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+        
+        // 5. Shared host folder mounted in guest via virtiofs.
+        // Host path: ~/Library/Application Support/mlv-<UUID>/shared
+        // Guest mount tag: mlvshare
+        let sharedFolderURL = try VMStorageManager.shared.ensureVMSharedDirectoryExists(for: vm.id)
+        let sharedDirectory = VZSharedDirectory(url: sharedFolderURL, readOnly: false)
+        let directoryShare = VZSingleDirectoryShare(directory: sharedDirectory)
+        let fileSystemDevice = VZVirtioFileSystemDeviceConfiguration(tag: sharedFolderMountTag)
+        fileSystemDevice.share = directoryShare
+        config.directorySharingDevices = [fileSystemDevice]
         
         // Serial Console setup (to be handled by VMManager to manage pipes)
         // config.consoleDevices = ...

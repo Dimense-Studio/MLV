@@ -6,7 +6,8 @@ struct VMConsoleWindow: View {
     
     var body: some View {
         ZStack {
-            OverlayCanvasBackground()
+            Color.black
+                .ignoresSafeArea()
 
             VStack(spacing: 12) {
                 HStack {

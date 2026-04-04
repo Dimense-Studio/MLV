@@ -6,6 +6,7 @@ class VMStorageManager {
     static let shared = VMStorageManager()
     
     private let isoCacheName = "mlv-iso-cache"
+    private let sharedFolderName = "shared"
     
     func getVMRootDirectory(for id: UUID) -> URL {
         let containerDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
@@ -18,6 +19,15 @@ class VMStorageManager {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         return dir
+    }
+
+    func ensureVMSharedDirectoryExists(for id: UUID) throws -> URL {
+        let vmDir = try ensureVMDirectoryExists(for: id)
+        let sharedDir = vmDir.appendingPathComponent(sharedFolderName, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: sharedDir.path) {
+            try FileManager.default.createDirectory(at: sharedDir, withIntermediateDirectories: true)
+        }
+        return sharedDir
     }
     
     func createSparseDisk(at url: URL, sizeGiB: Int, preallocate: Bool = false) throws {

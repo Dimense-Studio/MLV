@@ -16,7 +16,10 @@ class VMManager {
     private var terminalConsoleServers: [UUID: VMTerminalConsoleServer] = [:]
     private var wgForwarderTargetIP: [UUID: String] = [:]
     private var serialReadPipes: [UUID: Pipe] = [:]
+    private let serialWriteQueue = DispatchQueue(label: "dimense.net.MLV.serial-write", qos: .utility)
+    private var pendingPollWrites: Set<UUID> = []
     private var pollBuffers: [UUID: String] = [:]
+    private var lastIPAddressDetectionAt: [UUID: Date] = [:]
     private var restartingVMs: Set<UUID> = []
     private var vmPressureStartTimes: [UUID: Date] = [:]
     private var vmPressureNotified: Set<UUID> = []
@@ -147,7 +150,7 @@ class VMManager {
     }
 
     func listContainerImages() async throws -> [ContainerImageInfo] {
-        try AppleContainerService.shared.listImages()
+        try await AppleContainerService.shared.listContainerImages()
     }
 
     func pullContainerImage(reference: String) async throws {
@@ -155,7 +158,7 @@ class VMManager {
         guard !trimmed.isEmpty else {
             throw VMError.configurationInvalid("Image reference cannot be empty.")
         }
-        try AppleContainerService.shared.pullImage(reference: trimmed)
+        try await AppleContainerService.shared.pullImageAsync(reference: trimmed)
     }
 
     func pullContainerImage(
@@ -176,7 +179,7 @@ class VMManager {
     func deleteContainerImage(reference: String) async throws {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        try AppleContainerService.shared.deleteImage(reference: trimmed)
+        try await AppleContainerService.shared.deleteImageAsync(reference: trimmed)
     }
     
     func autoStartVMsIfNeeded() {
@@ -233,90 +236,32 @@ class VMManager {
     
     private func pollVMData(_ vm: VirtualMachine) {
         guard let pipe = vm.serialWritePipe else { return }
-        let normalizedVMName = vm.name
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: "_", with: "-")
-        let autoPattern = "mlv-\(normalizedVMName)"
-        let shellAutoPattern = shellSingleQuoted(autoPattern)
-        
-        let pollCmd = """
-        echo "---POLL_START---"
-        export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-        ip -4 addr show | grep inet | grep -v 127.0.0.1 | awk '{print $2}' | cut -d/ -f1 | head -n 1
-        ip route show default | awk '{print $3}' | head -n 1
-        cat /etc/resolv.conf | grep nameserver | awk '{print $2}' | xargs echo
-        echo "---VM_USAGE_START---"
-        awk '/^cpu / {print "CPU_TICKS " $2 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9; exit}' /proc/stat 2>/dev/null || echo "CPU_TICKS 0 0 0 0 0 0 0 0"
-        awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {avail=$2} END {if (total>0) print "MEM_KB " total " " avail; else print "MEM_KB 0 0"}' /proc/meminfo 2>/dev/null
-        df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print "DISK_PCT " $5}' || echo "DISK_PCT 0"
-        PID=\(max(0, vm.monitoredProcessPID))
-        if [ "$PID" -le 1 ]; then
-          PID=$(pgrep -fo -- \(shellAutoPattern) 2>/dev/null || echo 0)
-        fi
-        echo "PID_SELECTED $PID"
-        if [ "$PID" -gt 0 ] && [ -r "/proc/$PID/stat" ]; then
-          awk -v pid="$PID" '$1 == pid {print "PID_TICKS " $14 " " $15; found=1} END {if (!found) print "PID_TICKS 0 0"}' /proc/$PID/stat 2>/dev/null
-          awk -v pid="$PID" '/^VmRSS:/ {print "PID_RSS_KB " $2; found=1} END {if (!found) print "PID_RSS_KB 0"}' /proc/$PID/status 2>/dev/null
-        else
-          echo "PID_TICKS 0 0"
-          echo "PID_RSS_KB 0"
-        fi
-        head -n 1 /proc/stat 2>/dev/null || true
-        grep -m1 '^MemTotal:' /proc/meminfo 2>/dev/null || true
-        grep -m1 '^MemAvailable:' /proc/meminfo 2>/dev/null || true
-        df -P / 2>/dev/null | head -n 2 || true
-        echo "---VM_USAGE_END---"
-        echo "---PODS_START---"
-        KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
-        K3S_BIN="$(command -v k3s 2>/dev/null || true)"
-        if [ -z "$KUBECTL_BIN" ] && [ -x /usr/local/bin/kubectl ]; then KUBECTL_BIN=/usr/local/bin/kubectl; fi
-        if [ -z "$KUBECTL_BIN" ] && [ -x /usr/bin/kubectl ]; then KUBECTL_BIN=/usr/bin/kubectl; fi
-        if [ -n "$KUBECTL_BIN" ]; then
-          "$KUBECTL_BIN" get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" | awk '{print $1 "|" $2 "|" $3 "|" $4 "|" $5}' | head -n 40
-        elif [ -n "$K3S_BIN" ]; then
-          "$K3S_BIN" kubectl get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" 2>/dev/null | awk '{print $1 "|" $2 "|" $3 "|" $4 "|" $5}' | head -n 40
-        else
-          echo "K3S_NOT_READY"
-        fi
-        echo "---PODS_END---"
-        echo "---CONTAINERS_START---"
-        DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
-        NERDCTL_BIN="$(command -v nerdctl 2>/dev/null || true)"
-        PODMAN_BIN="$(command -v podman 2>/dev/null || true)"
-        CRICTL_BIN="$(command -v crictl 2>/dev/null || true)"
-        if [ -z "$DOCKER_BIN" ] && [ -x /usr/local/bin/docker ]; then DOCKER_BIN=/usr/local/bin/docker; fi
-        if [ -z "$DOCKER_BIN" ] && [ -x /usr/bin/docker ]; then DOCKER_BIN=/usr/bin/docker; fi
-        if [ -z "$NERDCTL_BIN" ] && [ -x /usr/local/bin/nerdctl ]; then NERDCTL_BIN=/usr/local/bin/nerdctl; fi
-        if [ -z "$NERDCTL_BIN" ] && [ -x /usr/bin/nerdctl ]; then NERDCTL_BIN=/usr/bin/nerdctl; fi
-        if [ -z "$PODMAN_BIN" ] && [ -x /usr/local/bin/podman ]; then PODMAN_BIN=/usr/local/bin/podman; fi
-        if [ -z "$PODMAN_BIN" ] && [ -x /usr/bin/podman ]; then PODMAN_BIN=/usr/bin/podman; fi
-        if [ -z "$CRICTL_BIN" ] && [ -x /usr/local/bin/crictl ]; then CRICTL_BIN=/usr/local/bin/crictl; fi
-        if [ -z "$CRICTL_BIN" ] && [ -x /usr/bin/crictl ]; then CRICTL_BIN=/usr/bin/crictl; fi
-        if [ -n "$DOCKER_BIN" ]; then
-          "$DOCKER_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|docker' 2>/dev/null | head -n 40
-        elif [ -n "$NERDCTL_BIN" ]; then
-          "$NERDCTL_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|nerdctl' 2>/dev/null | head -n 40
-        elif [ -n "$PODMAN_BIN" ]; then
-          "$PODMAN_BIN" ps --format '{{.Names}}|{{.Image}}|{{.Status}}|podman' 2>/dev/null | head -n 40
-        elif [ -n "$CRICTL_BIN" ]; then
-          "$CRICTL_BIN" ps --no-trunc 2>/dev/null | awk 'NR>1 {print $NF "|" $2 "|" $5 "|" "crictl"}' | head -n 40
-        elif [ -n "$K3S_BIN" ]; then
-          "$K3S_BIN" crictl ps --no-trunc 2>/dev/null | awk 'NR>1 {print $NF "|" $2 "|" $5 "|" "k3s-crictl"}' | head -n 40
-        else
-          echo "CONTAINERS_NOT_READY"
-        fi
-        echo "---CONTAINERS_END---"
-        echo "---POLL_END---"
-        """
-        
-        if let data = (pollCmd + "\n").data(using: .utf8) {
-            try? pipe.fileHandleForWriting.write(contentsOf: data)
+        guard pendingPollWrites.insert(vm.id).inserted else { return }
+
+        let pollCmd = VMTelemetryService.shared.generatePollCommand(for: vm)
+        guard let data = (pollCmd + "\n").data(using: .utf8) else {
+            pendingPollWrites.remove(vm.id)
+            return
+        }
+
+        let handle = pipe.fileHandleForWriting
+        let vmID = vm.id
+        serialWriteQueue.async { [weak self] in
+            defer {
+                Task { @MainActor in
+                    self?.pendingPollWrites.remove(vmID)
+                }
+            }
+            try? handle.write(contentsOf: data)
         }
     }
     
     private func evaluateVMHealth(_ vm: VirtualMachine) {
         guard vm.state == .running, vm.isInstalled else { return }
+        
+        // Trigger provisioning if needed
+        VMProvisioningService.shared.provisionIfNeeded(vm)
+        
         guard let last = vm.lastHealthyPoll else { return }
         if Date().timeIntervalSince(last) < 90 { return }
         if vm.userInitiatedStop { return }
@@ -360,10 +305,10 @@ class VMManager {
         vm.isMaster = isMaster
         vm.selectedDistro = distro
         vm.networkMode = networkMode
-        vm.bridgeInterfaceName = networkMode == .bridge ? bridgeInterfaceName : nil
+        vm.bridgeInterfaceName = (networkMode == .bridge) ? VMNetworkService.shared.resolveBridgeInterface(preferred: bridgeInterfaceName) : nil
         vm.secondaryNetworkEnabled = secondaryNetworkEnabled
         vm.secondaryNetworkMode = secondaryNetworkMode
-        vm.secondaryBridgeInterfaceName = (secondaryNetworkEnabled && secondaryNetworkMode == .bridge) ? secondaryBridgeInterfaceName : nil
+        vm.secondaryBridgeInterfaceName = (secondaryNetworkEnabled && secondaryNetworkMode == .bridge) ? VMNetworkService.shared.resolveBridgeInterface(preferred: secondaryBridgeInterfaceName) : nil
         vm.monitoredProcessPID = Int.random(in: 100...999_999)
         vm.monitoredProcessName = autoPattern(for: vm.name)
         vm.clusterRole = isMaster ? .master : .node
@@ -373,7 +318,7 @@ class VMManager {
             vm.stage = .installed
         }
         
-        let (controlPorts, dataPorts) = allocateWireGuardPorts(for: vm.id)
+        let (controlPorts, dataPorts) = VMNetworkService.shared.allocateWireGuardPorts(for: vm.id)
         vm.wgControlListenPort = 51820
         vm.wgDataListenPort = 51821
         vm.wgControlHostForwardPort = controlPorts
@@ -391,7 +336,7 @@ class VMManager {
             vm.wgDataPublicKeyBase64 = kp.publicKey
         }
         
-        let octet = allocateWireGuardOctet(for: vm.id, preferred: isMaster ? 1 : nil)
+        let octet = VMNetworkService.shared.allocateWireGuardOctet(for: vm.id, preferred: isMaster ? 1 : nil)
         vm.wgControlAddressCIDR = "10.13.0.\(octet)/24"
         vm.wgDataAddressCIDR = "10.13.1.\(octet)/24"
         
@@ -422,6 +367,12 @@ class VMManager {
     }
     
     func startVM(_ vm: VirtualMachine) async throws {
+        try await VMLifecycleManager.shared.performOperation(for: vm.id) {
+            try await self._startVMInternal(vm)
+        }
+    }
+
+    private func _startVMInternal(_ vm: VirtualMachine) async throws {
         if vm.state == .starting || vm.state == .running { return }
         
         vm.addLog("Starting Virtual Machine: \(vm.name)")
@@ -434,8 +385,8 @@ class VMManager {
             do {
                 try AppleContainerService.shared.ensureSystemRunning()
                 let image = containerImage(for: vm)
-                try AppleContainerService.shared.pullImage(reference: image)
-                let message = try AppleContainerService.shared.startWorkload(
+                try await AppleContainerService.shared.pullImageAsync(reference: image)
+                let message = try await AppleContainerService.shared.startWorkload(
                     name: containerName(for: vm),
                     image: image,
                     cpus: vm.cpuCount,
@@ -885,6 +836,12 @@ class VMManager {
     }
     
     private func updateDetectedIPAddress(for vm: VirtualMachine) {
+        let now = Date()
+        if let last = lastIPAddressDetectionAt[vm.id], now.timeIntervalSince(last) < 15 {
+            return
+        }
+        lastIPAddressDetectionAt[vm.id] = now
+
         if vm.networkMode == .bridge, vm.bridgeInterfaceName == nil { return }
         guard let mac = storedMACAddress(for: vm) else { return }
         guard let ip = detectIPv4Address(forMAC: mac) else { return }
@@ -1260,6 +1217,12 @@ class VMManager {
     }
     
     func stopVM(_ vm: VirtualMachine) async throws {
+        try await VMLifecycleManager.shared.performOperation(for: vm.id) {
+            try await self._stopVMInternal(vm)
+        }
+    }
+
+    private func _stopVMInternal(_ vm: VirtualMachine) async throws {
         if useAppleContainerRuntime {
             vm.userInitiatedStop = true
             do {
@@ -1334,385 +1297,7 @@ class VMManager {
             }
             VMStorageManager.shared.cleanupVMDirectory(for: vm.id)
             virtualMachines.removeAll { $0.id == vm.id }
-            VMStatePersistence.shared.saveVMs(virtualMachines)
-        }
-    }
-}
-
-private final class AppleContainerService {
-    static let shared = AppleContainerService()
-
-    private let defaultExecutable = "/usr/local/bin/container"
-    private let latestReleaseAPI = URL(string: "https://api.github.com/repos/apple/container/releases/latest")!
-
-    private init() {}
-
-    var isInstalled: Bool {
-        if FileManager.default.isExecutableFile(atPath: defaultExecutable) {
-            return true
-        }
-        let result = runProcess(executablePath: "/usr/bin/which", arguments: ["container"], timeout: 2)
-        return result.exitCode == 0 && !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    func startWorkload(name: String, image: String, cpus: Int, memoryGB: Int) throws -> String {
-        let executable = try requireExecutable()
-        if try workloadExists(name: name, executable: executable) {
-            _ = try run(executable: executable, arguments: ["start", name])
-            return "Started existing container workload '\(name)'."
-        }
-
-        let safeCPUs = max(1, cpus)
-        let safeMemory = max(1, memoryGB)
-        _ = try run(
-            executable: executable,
-            arguments: [
-                "run", "-d",
-                "--name", name,
-                "--cpus", String(safeCPUs),
-                "--memory", "\(safeMemory)g",
-                image
-            ]
-        )
-        return "Created and started container workload '\(name)' from image '\(image)'."
-    }
-
-    func stopWorkload(name: String) throws {
-        let executable = try requireExecutable()
-        guard try workloadExists(name: name, executable: executable) else { return }
-        _ = try run(executable: executable, arguments: ["stop", name])
-    }
-
-    func deleteWorkload(name: String) throws {
-        let executable = try requireExecutable()
-        guard try workloadExists(name: name, executable: executable) else { return }
-        _ = try run(executable: executable, arguments: ["delete", "--force", name])
-    }
-
-    func systemStatusRunning() throws -> Bool {
-        let executable = try requireExecutable()
-        let result = try run(executable: executable, arguments: ["system", "status"])
-        let lower = result.output.lowercased()
-        return lower.contains("running") || lower.contains("active")
-    }
-
-    func ensureSystemRunning() throws {
-        if try systemStatusRunning() {
-            return
-        }
-        try startSystem()
-        if !(try systemStatusRunning()) {
-            throw VMError.configurationInvalid("Apple container system failed to start. Try running 'container system start' in Terminal.")
-        }
-    }
-
-    func startSystem() throws {
-        let executable = try requireExecutable()
-        _ = try run(executable: executable, arguments: ["system", "start"], timeout: 90)
-    }
-
-    func stopSystem() throws {
-        let executable = try requireExecutable()
-        _ = try run(executable: executable, arguments: ["system", "stop"], timeout: 90)
-    }
-
-    func installOrUpdateFromOfficialRelease() async throws {
-        let request = URLRequest(url: latestReleaseAPI)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw VMError.configurationInvalid("Failed to query Apple container releases.")
-        }
-
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-        guard let asset = selectInstallerAsset(from: release.assets), let downloadURL = URL(string: asset.browserDownloadURL) else {
-            throw VMError.configurationInvalid("No macOS installer package found in latest Apple container release.")
-        }
-
-        let (tempFileURL, pkgResponse) = try await URLSession.shared.download(from: downloadURL)
-        guard let pkgHTTP = pkgResponse as? HTTPURLResponse, (200..<300).contains(pkgHTTP.statusCode) else {
-            throw VMError.configurationInvalid("Failed to download Apple container installer package.")
-        }
-
-        let fileManager = FileManager.default
-        let destination = fileManager.temporaryDirectory
-            .appendingPathComponent("apple-container-\(release.tagName).pkg")
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.moveItem(at: tempFileURL, to: destination)
-
-        _ = await MainActor.run {
-            NSWorkspace.shared.open(destination)
-        }
-    }
-
-    func listImages() throws -> [ContainerImageInfo] {
-        let executable = try requireExecutable()
-        let result = try run(executable: executable, arguments: ["image", "list", "--format", "json", "--verbose"])
-        return parseImages(from: result.output)
-    }
-
-    func pullImage(reference: String) throws {
-        let executable = try requireExecutable()
-        _ = try run(executable: executable, arguments: ["image", "pull", reference], timeout: 120)
-    }
-
-    func pullImage(
-        reference: String,
-        onProgress: @escaping (_ progress: Double, _ detail: String) -> Void
-    ) async throws {
-        let executable = try requireExecutable()
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                do {
-                    // Best effort live progress; if this path fails, we fall back to plain pull.
-                    do {
-                        try self.runStreamingProcess(
-                            executablePath: executable,
-                            arguments: ["image", "pull", "--progress", "plain", reference],
-                            timeout: 600
-                        ) { line in
-                            let progress = self.parsePullProgress(from: line) ?? 0
-                            onProgress(progress, line)
-                        }
-                    } catch {
-                        onProgress(0, "Progress stream unavailable, continuing pull...")
-                        _ = try self.run(executable: executable, arguments: ["image", "pull", reference], timeout: 600)
-                    }
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    func deleteImage(reference: String) throws {
-        let executable = try requireExecutable()
-        _ = try run(executable: executable, arguments: ["image", "delete", "--force", reference], timeout: 60)
-    }
-
-    private func selectInstallerAsset(from assets: [GitHubReleaseAsset]) -> GitHubReleaseAsset? {
-        let pkgAssets = assets.filter { $0.name.lowercased().hasSuffix(".pkg") }
-        if let preferred = pkgAssets.first(where: {
-            let n = $0.name.lowercased()
-            return n.contains("arm64") || n.contains("aarch64")
-        }) {
-            return preferred
-        }
-        return pkgAssets.first
-    }
-
-    private func parseImages(from output: String) -> [ContainerImageInfo] {
-        guard let data = output.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data),
-              let rows = json as? [[String: Any]]
-        else {
-            return []
-        }
-
-        let images: [ContainerImageInfo] = rows.compactMap { row in
-            let reference = stringValue(
-                row["name"] ?? row["reference"] ?? row["image"] ?? row["repository"] ?? row["tag"]
-            )
-            if reference.isEmpty {
-                return nil
-            }
-            let imageID = stringValue(row["id"] ?? row["imageID"] ?? row["digest"])
-            let size = stringValue(row["size"] ?? row["virtualSize"] ?? row["diskSize"])
-            let created = stringValue(row["created"] ?? row["createdAt"] ?? row["creationTime"])
-            return ContainerImageInfo(reference: reference, imageID: imageID, size: size, created: created)
-        }
-        return images.sorted { $0.reference.localizedCaseInsensitiveCompare($1.reference) == .orderedAscending }
-    }
-
-    private func stringValue(_ raw: Any?) -> String {
-        switch raw {
-        case let s as String:
-            return s
-        case let n as NSNumber:
-            return n.stringValue
-        case let arr as [String]:
-            return arr.first ?? ""
-        case let arr as [Any]:
-            return arr.compactMap { $0 as? String }.first ?? ""
-        default:
-            return ""
-        }
-    }
-
-    private struct GitHubRelease: Decodable {
-        let tagName: String
-        let assets: [GitHubReleaseAsset]
-
-        private enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"
-            case assets
-        }
-    }
-
-    private struct GitHubReleaseAsset: Decodable {
-        let name: String
-        let browserDownloadURL: String
-
-        private enum CodingKeys: String, CodingKey {
-            case name
-            case browserDownloadURL = "browser_download_url"
-        }
-    }
-
-    private func workloadExists(name: String, executable: String) throws -> Bool {
-        do {
-            _ = try run(executable: executable, arguments: ["inspect", name])
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private func requireExecutable() throws -> String {
-        if FileManager.default.isExecutableFile(atPath: defaultExecutable) {
-            return defaultExecutable
-        }
-        let result = runProcess(executablePath: "/usr/bin/which", arguments: ["container"], timeout: 2)
-        if result.exitCode == 0 {
-            let path = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty {
-                return path
-            }
-        }
-        throw VMError.configurationInvalid("Apple container CLI not found. Install from github.com/apple/container and run: container system start")
-    }
-
-    private func run(executable: String, arguments: [String], timeout: TimeInterval = 30) throws -> (output: String, exitCode: Int32) {
-        let result = runProcess(executablePath: executable, arguments: arguments, timeout: timeout)
-        if result.exitCode == 0 {
-            return result
-        }
-        throw VMError.configurationInvalid(result.output.isEmpty ? "container command failed" : result.output)
-    }
-
-    private func runStreamingProcess(
-        executablePath: String,
-        arguments: [String],
-        timeout: TimeInterval,
-        onLine: @escaping (String) -> Void
-    ) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        var buffer = Data()
-        var fullOutput = ""
-        let lock = NSLock()
-
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            lock.lock()
-            buffer.append(data)
-            while let newline = buffer.firstIndex(of: 0x0A) {
-                let lineData = buffer.prefix(upTo: newline)
-                buffer.removeSubrange(...newline)
-                let line = String(data: lineData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !line.isEmpty {
-                    fullOutput += line + "\n"
-                    onLine(line)
-                }
-            }
-            lock.unlock()
-        }
-
-        do {
-            try process.run()
-        } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
-            throw VMError.configurationInvalid(error.localizedDescription)
-        }
-
-        if timeout > 0 {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning {
-                    process.terminate()
-                }
-            }
-        }
-
-        process.waitUntilExit()
-        pipe.fileHandleForReading.readabilityHandler = nil
-
-        let trailing = pipe.fileHandleForReading.readDataToEndOfFile()
-        if !trailing.isEmpty, let line = String(data: trailing, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
-            fullOutput += line + "\n"
-            onLine(line)
-        }
-
-        if process.terminationStatus != 0 {
-            throw VMError.configurationInvalid(fullOutput.isEmpty ? "container command failed" : fullOutput)
-        }
-    }
-
-    private func parsePullProgress(from line: String) -> Double? {
-        guard let range = line.range(of: #"(?:^|\s)(\d{1,3})%(?:\s|$)"#, options: .regularExpression) else {
-            return nil
-        }
-        let raw = line[range].replacingOccurrences(of: "%", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(raw) else { return nil }
-        return min(1.0, max(0.0, value / 100.0))
-    }
-
-    private func runProcess(executablePath: String, arguments: [String], timeout: TimeInterval) -> (output: String, exitCode: Int32) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-        } catch {
-            return (error.localizedDescription, 127)
-        }
-
-        if timeout > 0 {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning {
-                    process.terminate()
-                }
-            }
-        }
-
-        process.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return (String(data: data, encoding: .utf8) ?? "", process.terminationStatus)
-    }
-}
-
-struct ContainerImageInfo: Identifiable, Hashable {
-    var id: String { reference }
-    let reference: String
-    let imageID: String
-    let size: String
-    let created: String
-}
-
-enum VMError: Error, LocalizedError {
-    case virtualizationNotSupported
-    case configurationInvalid(String)
-    
-    var errorDescription: String? {
-        switch self {
-        case .virtualizationNotSupported:
-            return "Virtualization is not supported on this Mac"
-        case .configurationInvalid(let reason):
-            return "Invalid VM configuration: \(reason)"
+            VMStatePersistence.shared.saveVMs(self.virtualMachines)
         }
     }
 }

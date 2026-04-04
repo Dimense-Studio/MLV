@@ -51,19 +51,31 @@ enum OverlayTheme {
 }
 
 struct OverlayCanvasBackground: View {
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [OverlayTheme.background, OverlayTheme.backgroundEdge],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+    @State private var start = Date()
 
-            LinearGradient(
-                colors: [Color.clear, Color.black.opacity(0.38)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let time = timeline.date.timeIntervalSince(start)
+                
+                // Base background
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(OverlayTheme.background))
+                
+                // Liquid blobs
+                let blobCount = 4
+                for i in 0..<blobCount {
+                    let t = time * 0.4 + Double(i) * 2.0
+                    let x = size.width * (0.5 + 0.3 * cos(t * 0.7 + Double(i)))
+                    let y = size.height * (0.5 + 0.3 * sin(t * 0.5 + Double(i) * 1.5))
+                    let radius = min(size.width, size.height) * (0.3 + 0.1 * sin(t * 0.3))
+                    
+                    let color = i % 2 == 0 ? Color.blue.opacity(0.12) : Color.purple.opacity(0.08)
+                    context.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)), with: .color(color))
+                }
+                
+                // Surface overlay removed to keep the animated colors unobstructed
+            }
+            .blur(radius: 80)
         }
         .ignoresSafeArea()
     }
@@ -74,12 +86,20 @@ struct OverlayPanelModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(OverlayTheme.panel)
+            .background(
+                VisualEffectView(
+                    material: .underWindowBackground,
+                    blendingMode: .withinWindow,
+                    state: .active
+                )
+            )
+            .background(OverlayTheme.panel.opacity(0.4))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .stroke(OverlayTheme.border, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 5)
     }
 }
 

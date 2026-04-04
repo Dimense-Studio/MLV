@@ -16,7 +16,8 @@ extension UTType {
 }
 
 enum DashboardPalette {
-    static let surface = OverlayTheme.background
+    // Keep the animated canvas visible by leaving the base transparent.
+    static let surface: Color = .clear
     static let panel = OverlayTheme.panel
     static let panelAlt = OverlayTheme.panelStrong
     static let border = OverlayTheme.border
@@ -372,7 +373,7 @@ struct VMListView: View {
                         }
                         .frame(height: 124)
                         .padding(.vertical, 6)
-                        .background(OverlayTheme.panelStrong)
+                        .background(OverlayTheme.panelStrong.opacity(0.62))
 
                         VStack(spacing: 12) {
                             if snapshot.filtered.isEmpty {
@@ -392,7 +393,8 @@ struct VMListView: View {
                             }
                         }
                         .padding(14)
-                        .background(OverlayTheme.panelStrong)
+                        // Leave empty state floating on the canvas without an extra panel.
+                        .background(snapshot.filtered.isEmpty ? Color.clear : OverlayTheme.panelStrong)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 24))
                     .overlay(
@@ -1210,8 +1212,10 @@ struct StorageListView: View {
         return Group {
             if all.isEmpty {
                 ContentUnavailableView("No Storage Active", systemImage: "externaldrive.badge.xmark", description: Text("Start a node to see allocated disk space"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else if filtered.isEmpty {
                 ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No storage entries match your search"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
                 List {
                     ForEach(filtered) { vm in
