@@ -90,13 +90,12 @@ class VMConfigurationBuilder {
                     kernelInitrd = await fetchDebianNetbootKernel(cacheDir: vmDir)
                 }
                 if let (kernelURL, initrdURL) = kernelInitrd {
+                    let injectedInitrd = (try? await fetchAndInjectPreseed(into: initrdURL, cacheDir: vmDir)) ?? initrdURL
                     let linuxBoot = VZLinuxBootLoader(kernelURL: kernelURL)
-                    linuxBoot.initialRamdiskURL = initrdURL
-                    // Use GitHub raw URL for the preseed file instead of the local server
-                    let preseedURL = "https://raw.githubusercontent.com/Dimense-Studio/MLV/main/preseed.cfg"
-                    linuxBoot.commandLine = "auto priority=critical preseed/url=\(preseedURL) debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us --- quiet"
+                    linuxBoot.initialRamdiskURL = injectedInitrd
+                    linuxBoot.commandLine = "auto priority=critical file=/preseed.cfg debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us --- quiet"
                     config.bootLoader = linuxBoot
-                    logger.info("INSTALL MODE: Zero-touch Debian with VZLinuxBootLoader")
+                    logger.info("INSTALL MODE: Zero-touch Debian with VZLinuxBootLoader (local preseed injection)")
                 } else {
                     let bootLoader = VZEFIBootLoader()
                     bootLoader.variableStore = efiStore
@@ -309,5 +308,43 @@ class VMConfigurationBuilder {
             try? mac.string.write(to: url, atomically: true, encoding: .utf8)
             device.macAddress = mac
         }
+    }
+    
+    private func fetchAndInjectPreseed(into initrdURL: URL, cacheDir: URL) async throws -> URL {
+        let preseedURL = "https://raw.githubusercontent.com/Dimense-Studio/MLV/main/preseed.cfg"
+        let (data, response) = try await URLSession.shared.data(from: URL(string: preseedURL)!)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            logger.error("Failed to download preseed.cfg from GitHub")
+            return initrdURL
+        }
+        
+        let preseedFile = cacheDir.appendingPathComponent("preseed.cfg")
+        try data.write(to: preseedFile)
+        
+        let cpioFile = cacheDir.appendingPathComponent("preseed.cpio")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "cd '\(cacheDir.path)' && echo 'preseed.cfg' | /usr/bin/cpio -o -H newc > preseed.cpio"]
+        try process.run()
+        process.waitUntilExit()
+        
+        if process.terminationStatus == 0 {
+            let injectedInitrd = cacheDir.appendingPathComponent("initrd-injected.gz")
+            if FileManager.default.fileExists(atPath: injectedInitrd.path) {
+                try FileManager.default.removeItem(at: injectedInitrd)
+            }
+            
+            let initrdData = try Data(contentsOf: initrdURL)
+            let cpioData = try Data(contentsOf: cpioFile)
+            
+            var combined = Data()
+            combined.append(initrdData)
+            combined.append(cpioData)
+            
+            try combined.write(to: injectedInitrd)
+            return injectedInitrd
+        }
+        
+        return initrdURL
     }
 }
