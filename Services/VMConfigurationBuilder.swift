@@ -93,9 +93,10 @@ class VMConfigurationBuilder {
                     let injectedInitrd = (try? await fetchAndInjectPreseed(into: initrdURL, cacheDir: vmDir)) ?? initrdURL
                     let linuxBoot = VZLinuxBootLoader(kernelURL: kernelURL)
                     linuxBoot.initialRamdiskURL = injectedInitrd
-                    linuxBoot.commandLine = "auto priority=critical preseed/file=/preseed.cfg debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us --- quiet"
+                    // preseed/file= is the correct d-i kernel argument for a file embedded in the initrd
+                    linuxBoot.commandLine = "auto=true priority=critical preseed/file=/preseed.cfg DEBIAN_FRONTEND=noninteractive console=ttyAMA0 --- quiet"
                     config.bootLoader = linuxBoot
-                    logger.info("INSTALL MODE: Zero-touch Debian with VZLinuxBootLoader (local preseed injection)")
+                    logger.info("INSTALL MODE: Zero-touch Debian with preseed injected into initrd")
                 } else {
                     let bootLoader = VZEFIBootLoader()
                     bootLoader.variableStore = efiStore
@@ -312,39 +313,50 @@ class VMConfigurationBuilder {
     
     private func fetchAndInjectPreseed(into initrdURL: URL, cacheDir: URL) async throws -> URL {
         let preseedURL = "https://raw.githubusercontent.com/Dimense-Studio/MLV/main/preseed.cfg"
+        logger.info("Fetching preseed.cfg from GitHub...")
+        
         let (data, response) = try await URLSession.shared.data(from: URL(string: preseedURL)!)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            logger.error("Failed to download preseed.cfg from GitHub")
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200, !data.isEmpty else {
+            logger.error("Failed to download preseed.cfg from GitHub (status: \((response as? HTTPURLResponse)?.statusCode ?? -1))")
             return initrdURL
         }
+        logger.info("Downloaded preseed.cfg (\(data.count) bytes)")
         
+        let fm = FileManager.default
+        // Always write fresh preseed from GitHub
         let preseedFile = cacheDir.appendingPathComponent("preseed.cfg")
+        if fm.fileExists(atPath: preseedFile.path) { try fm.removeItem(at: preseedFile) }
         try data.write(to: preseedFile)
         
-        let cpioFile = cacheDir.appendingPathComponent("preseed.cpio.gz")
+        // Build gzipped cpio containing preseed.cfg at root of archive
+        // The Linux kernel can concatenate multiple initrd images; append a gzip'd cpio after the main initrd.
+        let cpioFile = cacheDir.appendingPathComponent("preseed-inject.cpio.gz")
+        if fm.fileExists(atPath: cpioFile.path) { try fm.removeItem(at: cpioFile) }
+        
+        let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "cd '\(cacheDir.path)' && echo 'preseed.cfg' | /usr/bin/cpio -o -H newc | /usr/bin/gzip -c > preseed.cpio.gz"]
+        process.arguments = ["-c", "cd '\(cacheDir.path)' && printf 'preseed.cfg' | /usr/bin/cpio -o -H newc | /usr/bin/gzip -9 > 'preseed-inject.cpio.gz' && echo OK"]
+        process.standardOutput = pipe
+        process.standardError = pipe
         try process.run()
         process.waitUntilExit()
         
-        if process.terminationStatus == 0 {
-            let injectedInitrd = cacheDir.appendingPathComponent("initrd-injected.gz")
-            if FileManager.default.fileExists(atPath: injectedInitrd.path) {
-                try FileManager.default.removeItem(at: injectedInitrd)
-            }
-            
-            let initrdData = try Data(contentsOf: initrdURL)
-            let cpioData = try Data(contentsOf: cpioFile)
-            
-            var combined = Data()
-            combined.append(initrdData)
-            combined.append(cpioData)
-            
-            try combined.write(to: injectedInitrd)
-            return injectedInitrd
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0, fm.fileExists(atPath: cpioFile.path) else {
+            logger.error("cpio build failed (status \(process.terminationStatus)): \(output)")
+            return initrdURL
         }
+        logger.info("Built preseed cpio.gz")
         
-        return initrdURL
+        // Concatenate: original initrd.gz + preseed cpio.gz
+        let injectedInitrd = cacheDir.appendingPathComponent("initrd-injected.gz")
+        if fm.fileExists(atPath: injectedInitrd.path) { try fm.removeItem(at: injectedInitrd) }
+        
+        var combined = try Data(contentsOf: initrdURL)
+        combined.append(try Data(contentsOf: cpioFile))
+        try combined.write(to: injectedInitrd)
+        logger.info("Injected preseed into initrd (\(combined.count) bytes total)")
+        return injectedInitrd
     }
 }
