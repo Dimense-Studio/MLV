@@ -5,7 +5,7 @@ struct VMMetadata: Codable {
     let id: UUID
     let name: String
     let cpuCount: Int
-    let memorySizeGB: Int
+    let memorySizeMB: Int
     let systemDiskSizeGB: Int
     let dataDiskSizeGB: Int
     let systemDiskProfile: String?
@@ -34,13 +34,119 @@ struct VMMetadata: Codable {
     let terminalConsoleHostPort: Int?
     let monitoredProcessPID: Int?
     let monitoredProcessName: String?
+    let hostServicePID: Int?
     let containerImageReference: String?
+    let containerMounts: [VirtualMachine.ContainerMount]?
+    let containerPorts: [VirtualMachine.ContainerPort]?
+    let isContainerWorkload: Bool?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, cpuCount, memorySizeMB, memorySizeGB, systemDiskSizeGB, dataDiskSizeGB
+        case systemDiskProfile, dataDiskProfile, selectedDistro, isMaster, stage, isInstalled
+        case networkMode, bridgeInterfaceName, secondaryNetworkEnabled, secondaryNetworkMode
+        case secondaryBridgeInterfaceName, clusterRole, wgControlPrivateKeyBase64, wgControlPublicKeyBase64
+        case wgControlAddressCIDR, wgControlListenPort, wgControlHostForwardPort, wgDataPrivateKeyBase64
+        case wgDataPublicKeyBase64, wgDataAddressCIDR, wgDataListenPort, wgDataHostForwardPort
+        case autoStartOnLaunch, terminalConsoleHostPort, monitoredProcessPID, monitoredProcessName, hostServicePID
+        case containerImageReference, containerMounts, containerPorts, isContainerWorkload
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        cpuCount = try container.decode(Int.self, forKey: .cpuCount)
+        
+        if let mb = try container.decodeIfPresent(Int.self, forKey: .memorySizeMB) {
+            memorySizeMB = mb
+        } else if let gb = try container.decodeIfPresent(Int.self, forKey: .memorySizeGB) {
+            memorySizeMB = gb * 1024
+        } else {
+            memorySizeMB = 4096
+        }
+        
+        systemDiskSizeGB = try container.decode(Int.self, forKey: .systemDiskSizeGB)
+        dataDiskSizeGB = try container.decode(Int.self, forKey: .dataDiskSizeGB)
+        systemDiskProfile = try container.decodeIfPresent(String.self, forKey: .systemDiskProfile)
+        dataDiskProfile = try container.decodeIfPresent(String.self, forKey: .dataDiskProfile)
+        selectedDistro = try container.decode(String.self, forKey: .selectedDistro)
+        isMaster = try container.decode(Bool.self, forKey: .isMaster)
+        stage = try container.decode(String.self, forKey: .stage)
+        isInstalled = try container.decode(Bool.self, forKey: .isInstalled)
+        networkMode = try container.decodeIfPresent(String.self, forKey: .networkMode)
+        bridgeInterfaceName = try container.decodeIfPresent(String.self, forKey: .bridgeInterfaceName)
+        secondaryNetworkEnabled = try container.decodeIfPresent(Bool.self, forKey: .secondaryNetworkEnabled)
+        secondaryNetworkMode = try container.decodeIfPresent(String.self, forKey: .secondaryNetworkMode)
+        secondaryBridgeInterfaceName = try container.decodeIfPresent(String.self, forKey: .secondaryBridgeInterfaceName)
+        clusterRole = try container.decodeIfPresent(String.self, forKey: .clusterRole)
+        wgControlPrivateKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgControlPrivateKeyBase64)
+        wgControlPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgControlPublicKeyBase64)
+        wgControlAddressCIDR = try container.decodeIfPresent(String.self, forKey: .wgControlAddressCIDR)
+        wgControlListenPort = try container.decodeIfPresent(Int.self, forKey: .wgControlListenPort)
+        wgControlHostForwardPort = try container.decodeIfPresent(Int.self, forKey: .wgControlHostForwardPort)
+        wgDataPrivateKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgDataPrivateKeyBase64)
+        wgDataPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgDataPublicKeyBase64)
+        wgDataAddressCIDR = try container.decodeIfPresent(String.self, forKey: .wgDataAddressCIDR)
+        wgDataListenPort = try container.decodeIfPresent(Int.self, forKey: .wgDataListenPort)
+        wgDataHostForwardPort = try container.decodeIfPresent(Int.self, forKey: .wgDataHostForwardPort)
+        autoStartOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoStartOnLaunch)
+        terminalConsoleHostPort = try container.decodeIfPresent(Int.self, forKey: .terminalConsoleHostPort)
+        monitoredProcessPID = try container.decodeIfPresent(Int.self, forKey: .monitoredProcessPID)
+        monitoredProcessName = try container.decodeIfPresent(String.self, forKey: .monitoredProcessName)
+        hostServicePID = try container.decodeIfPresent(Int.self, forKey: .hostServicePID)
+        containerImageReference = try container.decodeIfPresent(String.self, forKey: .containerImageReference)
+        containerMounts = try container.decodeIfPresent([VirtualMachine.ContainerMount].self, forKey: .containerMounts)
+        containerPorts = try container.decodeIfPresent([VirtualMachine.ContainerPort].self, forKey: .containerPorts)
+        isContainerWorkload = try container.decodeIfPresent(Bool.self, forKey: .isContainerWorkload)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(cpuCount, forKey: .cpuCount)
+        try container.encode(memorySizeMB, forKey: .memorySizeMB)
+        try container.encode(systemDiskSizeGB, forKey: .systemDiskSizeGB)
+        try container.encode(dataDiskSizeGB, forKey: .dataDiskSizeGB)
+        try container.encodeIfPresent(systemDiskProfile, forKey: .systemDiskProfile)
+        try container.encodeIfPresent(dataDiskProfile, forKey: .dataDiskProfile)
+        try container.encode(selectedDistro, forKey: .selectedDistro)
+        try container.encode(isMaster, forKey: .isMaster)
+        try container.encode(stage, forKey: .stage)
+        try container.encode(isInstalled, forKey: .isInstalled)
+        try container.encodeIfPresent(networkMode, forKey: .networkMode)
+        try container.encodeIfPresent(bridgeInterfaceName, forKey: .bridgeInterfaceName)
+        try container.encodeIfPresent(secondaryNetworkEnabled, forKey: .secondaryNetworkEnabled)
+        try container.encodeIfPresent(secondaryNetworkMode, forKey: .secondaryNetworkMode)
+        try container.encodeIfPresent(secondaryBridgeInterfaceName, forKey: .secondaryBridgeInterfaceName)
+        try container.encodeIfPresent(clusterRole, forKey: .clusterRole)
+        try container.encodeIfPresent(wgControlPrivateKeyBase64, forKey: .wgControlPrivateKeyBase64)
+        try container.encodeIfPresent(wgControlPublicKeyBase64, forKey: .wgControlPublicKeyBase64)
+        try container.encodeIfPresent(wgControlAddressCIDR, forKey: .wgControlAddressCIDR)
+        try container.encodeIfPresent(wgControlListenPort, forKey: .wgControlListenPort)
+        try container.encodeIfPresent(wgControlHostForwardPort, forKey: .wgControlHostForwardPort)
+        try container.encodeIfPresent(wgDataPrivateKeyBase64, forKey: .wgDataPrivateKeyBase64)
+        try container.encodeIfPresent(wgDataPublicKeyBase64, forKey: .wgDataPublicKeyBase64)
+        try container.encodeIfPresent(wgDataAddressCIDR, forKey: .wgDataAddressCIDR)
+        try container.encodeIfPresent(wgDataListenPort, forKey: .wgDataListenPort)
+        try container.encodeIfPresent(wgDataHostForwardPort, forKey: .wgDataHostForwardPort)
+        try container.encodeIfPresent(autoStartOnLaunch, forKey: .autoStartOnLaunch)
+        try container.encodeIfPresent(terminalConsoleHostPort, forKey: .terminalConsoleHostPort)
+        try container.encodeIfPresent(monitoredProcessPID, forKey: .monitoredProcessPID)
+        try container.encodeIfPresent(monitoredProcessName, forKey: .monitoredProcessName)
+        try container.encodeIfPresent(hostServicePID, forKey: .hostServicePID)
+        try container.encodeIfPresent(containerImageReference, forKey: .containerImageReference)
+        try container.encodeIfPresent(containerMounts, forKey: .containerMounts)
+        try container.encodeIfPresent(containerPorts, forKey: .containerPorts)
+        try container.encodeIfPresent(isContainerWorkload, forKey: .isContainerWorkload)
+        try container.encodeIfPresent(isContainerWorkload, forKey: .isContainerWorkload)
+    }
     
     init(
         id: UUID,
         name: String,
         cpuCount: Int,
-        memorySizeGB: Int,
+        memorySizeMB: Int,
         systemDiskSizeGB: Int,
         dataDiskSizeGB: Int,
         systemDiskProfile: String?,
@@ -69,12 +175,16 @@ struct VMMetadata: Codable {
         terminalConsoleHostPort: Int?,
         monitoredProcessPID: Int?,
         monitoredProcessName: String?,
-        containerImageReference: String?
+        hostServicePID: Int?,
+        containerImageReference: String?,
+        containerMounts: [VirtualMachine.ContainerMount]?,
+        containerPorts: [VirtualMachine.ContainerPort]?,
+        isContainerWorkload: Bool?
     ) {
         self.id = id
         self.name = name
         self.cpuCount = cpuCount
-        self.memorySizeGB = memorySizeGB
+        self.memorySizeMB = memorySizeMB
         self.systemDiskSizeGB = systemDiskSizeGB
         self.dataDiskSizeGB = dataDiskSizeGB
         self.systemDiskProfile = systemDiskProfile
@@ -103,7 +213,11 @@ struct VMMetadata: Codable {
         self.terminalConsoleHostPort = terminalConsoleHostPort
         self.monitoredProcessPID = monitoredProcessPID
         self.monitoredProcessName = monitoredProcessName
+        self.hostServicePID = hostServicePID
         self.containerImageReference = containerImageReference
+        self.containerMounts = containerMounts
+        self.containerPorts = containerPorts
+        self.isContainerWorkload = isContainerWorkload
     }
 }
 
@@ -131,7 +245,7 @@ class VMStatePersistence {
                     id: vm.id,
                     name: vm.name,
                     cpuCount: vm.cpuCount,
-                    memorySizeGB: vm.memorySizeGB,
+                    memorySizeMB: vm.memorySizeMB,
                     systemDiskSizeGB: vm.systemDiskSizeGB,
                     dataDiskSizeGB: vm.dataDiskSizeGB,
                     systemDiskProfile: vm.systemDiskProfile.rawValue,
@@ -160,7 +274,11 @@ class VMStatePersistence {
                     terminalConsoleHostPort: vm.terminalConsoleHostPort,
                     monitoredProcessPID: vm.monitoredProcessPID,
                     monitoredProcessName: vm.monitoredProcessName,
-                    containerImageReference: vm.containerImageReference
+                    hostServicePID: vm.hostServicePID,
+                    containerImageReference: vm.containerImageReference,
+                    containerMounts: vm.containerMounts,
+                    containerPorts: vm.containerPorts,
+                    isContainerWorkload: vm.isContainerWorkload
                 )
             }
             do {

@@ -67,6 +67,15 @@ final class WireGuardManager {
         let pub = publicKeyBase64
         let epHost = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? "0.0.0.0"
         let epPort = listenPort
+        
+        let vmRoutes = VMManager.shared.virtualMachines
+            .filter { $0.state == .running || $0.state == .starting }
+            .compactMap { vm -> String? in
+                guard let addr = vm.wgControlAddressCIDR else { return nil }
+                // Return /[32] route for the VM IP
+                return (addr.components(separatedBy: "/").first ?? addr) + "/32"
+            }
+        
         return HostInfo(
             id: id,
             name: name,
@@ -74,7 +83,7 @@ final class WireGuardManager {
             endpointHost: epHost,
             endpointPort: epPort,
             addressCIDR: interfaceAddressCIDR,
-            advertisedRoutes: [],
+            advertisedRoutes: Array(Set(vmRoutes)).sorted(),
             cpuCount: HostResources.cpuCount,
             memoryGB: HostResources.totalMemoryGB,
             freeDiskGB: HostResources.freeDiskSpaceGB

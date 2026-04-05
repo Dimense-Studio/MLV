@@ -78,6 +78,10 @@ class VirtualMachine: Identifiable {
     var consoleOutput: String = ""
     var lastConsoleActivity: Date = Date()
     var lastHealthyPoll: Date? = nil
+    /// True when this VM represents a container workload (Apple container runtime).
+    var isContainerWorkload: Bool = false {
+        didSet { persist() }
+    }
     
     var stage: VMStage = .new {
         didSet {
@@ -199,12 +203,46 @@ class VirtualMachine: Identifiable {
         let status: String
         let runtime: String
     }
+
+    struct ContainerMount: Codable, Identifiable, Equatable {
+        let id: UUID
+        var hostPath: String
+        var containerPath: String
+        var isReadOnly: Bool
+        
+        init(id: UUID = UUID(), hostPath: String, containerPath: String, isReadOnly: Bool = false) {
+            self.id = id
+            self.hostPath = hostPath
+            self.containerPath = containerPath
+            self.isReadOnly = isReadOnly
+        }
+    }
+
+    struct ContainerPort: Codable, Identifiable, Equatable {
+        let id: UUID
+        var hostPort: Int
+        var containerPort: Int
+        var protocolName: String
+        
+        init(id: UUID = UUID(), hostPort: Int, containerPort: Int, protocolName: String = "tcp") {
+            self.id = id
+            self.hostPort = hostPort
+            self.containerPort = containerPort
+            self.protocolName = protocolName
+        }
+    }
     
     var deploymentLogs: [DeploymentLog] = []
     var deploymentProgress: Double = 0.0 // 0.0 to 1.0
     var needsUserInteraction: Bool = false
     var pods: [Pod] = []
     var containers: [Container] = []
+    var containerMounts: [ContainerMount] = [] {
+        didSet { persist() }
+    }
+    var containerPorts: [ContainerPort] = [] {
+        didSet { persist() }
+    }
     var downloadTask: Task<Void, Error>?
     var downloadPercent: Int = 0
     var downloadSpeedMBps: Double = 0
@@ -221,7 +259,9 @@ class VirtualMachine: Identifiable {
     var lastGuestCPUTotalTicks: UInt64? = nil
     var lastGuestCPUIdleTicks: UInt64? = nil
     var lastMonitoredProcessTicks: UInt64? = nil
-    var hostServicePID: Int? = nil
+    var hostServicePID: Int? = nil {
+        didSet { persist() }
+    }
     var containerImageReference: String = "" {
         didSet { persist() }
     }
@@ -245,7 +285,7 @@ class VirtualMachine: Identifiable {
     
     // Configurable Hardware
     var cpuCount: Int = 4
-    var memorySizeGB: Int = 4
+    var memorySizeMB: Int = 4096
     var systemDiskSizeGB: Int = 64
     var dataDiskSizeGB: Int = 100
     var isMaster: Bool = false
@@ -336,12 +376,12 @@ class VirtualMachine: Identifiable {
         lastMonitoredProcessTicks = nil
     }
     
-    init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramGB: Int = 4, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
+    init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramMB: Int = 4096, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
         self.id = id
         self.name = name
         self.isoURL = isoURL
         self.cpuCount = cpus
-        self.memorySizeGB = ramGB
+        self.memorySizeMB = ramMB
         self.systemDiskSizeGB = sysDiskGB
         self.dataDiskSizeGB = dataDiskGB
         

@@ -16,7 +16,6 @@ extension UTType {
 }
 
 enum DashboardPalette {
-    // Keep the animated canvas visible by leaving the base transparent.
     static let surface: Color = .clear
     static let panel = OverlayTheme.panel
     static let panelAlt = OverlayTheme.panelStrong
@@ -130,7 +129,7 @@ struct ContentView: View {
                     }
                 }
                 .padding(.leading, 64)
-                .padding(.top, 6)
+                .padding(.top, 14)
 
                 OverlaySidebar(
                     selectedTab: $selectedTab,
@@ -138,7 +137,7 @@ struct ContentView: View {
                     isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
                     onAuthorizeISO: { showingISOImporter = true }
                 )
-                .padding(.top, 10)
+                .padding(.top, 27)
                 .padding(.leading, 10)
             }
             .searchable(text: $searchText)
@@ -297,6 +296,14 @@ private struct OverlaySidebar: View {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .stroke(OverlayTheme.border.opacity(selectedTab == tab ? 1.0 : 0.75), lineWidth: 1)
                             )
+                            .overlay(alignment: .leading) {
+                                if selectedTab == tab {
+                                    Capsule()
+                                        .fill(OverlayTheme.accent)
+                                        .frame(width: 3, height: 26)
+                                        .transition(.move(edge: .leading).combined(with: .opacity))
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
                     .help(tab == .vms ? (isContainerMode ? "Containers" : "Virtual Machines") : tab.rawValue)
@@ -321,11 +328,17 @@ private struct OverlaySidebar: View {
                 .buttonStyle(.plain)
                 .help(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(14)
-        .background(Color.clear)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(OverlayTheme.panel.opacity(0.45))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(OverlayTheme.border.opacity(0.55), lineWidth: 1)
+        )
     }
 }
 
@@ -343,11 +356,11 @@ struct VMListView: View {
     }
     
     var body: some View {
-        let snapshot = viewModel.snapshot(search: search)
+        let snapshot = viewModel.snapshot(search: search, isContainerMode: isContainerMode)
         
         return ZStack(alignment: .trailing) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     VStack(spacing: 0) {
                         HStack(spacing: 10) {
                             Circle()
@@ -360,7 +373,6 @@ struct VMListView: View {
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 16)
-                        .background(DashboardPalette.panel)
 
                         HStack(spacing: 0) {
                             DashboardMetricTile(icon: "cpu", title: "CPU", value: "\(snapshot.averageCPUUsage)%", accent: DashboardPalette.accentPrimary)
@@ -373,37 +385,48 @@ struct VMListView: View {
                         }
                         .frame(height: 124)
                         .padding(.vertical, 6)
-                        .background(OverlayTheme.panelStrong.opacity(0.62))
+                    }
+                    .padding(.horizontal, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(OverlayTheme.panelStrong.opacity(0.55))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(DashboardPalette.border.opacity(0.75), lineWidth: 1)
+                    )
 
-                        VStack(spacing: 12) {
-                            if snapshot.filtered.isEmpty {
-                                ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
-                                    .padding(.vertical, 36)
-                            } else {
-                                ForEach(snapshot.filtered) { vm in
-                                    VMRowCompact(vm: vm, onDoubleClick: { vm in
-                                        guard !isContainerMode else { return }
-                                        NSApp.activate(ignoringOtherApps: true)
-                                        NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
-                                    }, onEdit: { vm in
-                                        editingVM = vm
-                                        showingConfigForm = true
-                                    })
+                    LazyVStack(spacing: 16) {
+                        if snapshot.filtered.isEmpty {
+                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
+                                .padding(.vertical, 36)
+                        } else {
+                            ForEach(snapshot.filtered) { vm in
+                                VMRowCompact(vm: vm, onDoubleClick: { vm in
+                                    if isContainerMode {
+                                        openContainerIP(vm)
+                                        return
+                                    }
+                                    NSApp.activate(ignoringOtherApps: true)
+                                    NotificationCenter.default.post(name: Notification.Name("OpenVMConsoleWindow"), object: vm.id)
+                                }, onEdit: { vm in
+                                    editingVM = vm
+                                    showingConfigForm = true
+                                })
+                                .onTapGesture {
+                                    if isContainerMode {
+                                        openContainerIP(vm)
+                                    }
                                 }
+                                .padding(.horizontal, 4)
                             }
                         }
-                        .padding(14)
-                        // Leave empty state floating on the canvas without an extra panel.
-                        .background(snapshot.filtered.isEmpty ? Color.clear : OverlayTheme.panelStrong)
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 24))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                    )
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
                 }
-                .padding(16)
-                .padding(.trailing, showingConfigForm ? 460 : 0)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 14)
                 .animation(.easeInOut(duration: 0.22), value: showingConfigForm)
             }
             .scrollIndicators(.hidden)
@@ -440,6 +463,15 @@ struct VMListView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(isContainerMode ? "Add Container" : "Add Node")
+            }
+        }
+    }
+
+    private func openContainerIP(_ vm: VirtualMachine) {
+        let ip = vm.ipAddress
+        if ip != "Detecting..." && !ip.isEmpty {
+            if let url = URL(string: "http://\(ip)") {
+                NSWorkspace.shared.open(url)
             }
         }
     }
@@ -487,6 +519,14 @@ struct VMRowCompact: View {
     }
     
     var body: some View {
+        let cardGradient = LinearGradient(
+            colors: isContainerMode
+                ? [Color.blue.opacity(0.20), Color.cyan.opacity(0.12)]
+                : [Color.purple.opacity(0.20), Color.indigo.opacity(0.14)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        
         HStack(spacing: 14) {
             Circle()
                 .fill(statusDotColor)
@@ -497,6 +537,7 @@ struct VMRowCompact: View {
                     Text(vm.name)
                         .font(.system(size: 20, weight: .medium))
                         .lineLimit(1)
+                        .foregroundStyle(isContainerMode && vm.state.isRunning ? .blue.opacity(0.9) : .primary)
 
                     if vm.isMaster {
                         Text("Master")
@@ -507,15 +548,29 @@ struct VMRowCompact: View {
                             .background(.quaternary, in: Capsule())
                     }
 
-                    Text(vm.selectedDistro.shortLabel)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    if !isContainerMode {
+                        Text(vm.selectedDistro.shortLabel)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                Text(vm.ipAddress)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if isContainerMode && vm.state.isRunning {
+                        Image(systemName: "safari")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(vm.ipAddress)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(isContainerMode && vm.state.isRunning && vm.ipAddress != "Detecting..." ? .blue.opacity(0.8) : .secondary)
+                        .lineLimit(1)
+                    if let pid = vm.hostServicePID {
+                        Text("PID \(pid)")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Spacer()
@@ -527,6 +582,10 @@ struct VMRowCompact: View {
         }
         .padding(.vertical, 18)
         .padding(.horizontal, 16)
+        .background(
+            cardGradient
+                .blendMode(.screen)
+        )
         .background(OverlayTheme.panelStrong)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
@@ -686,6 +745,7 @@ struct VMCard: View {
     let vm: VirtualMachine
     @Environment(\.openWindow) private var openWindow
     @State private var showingDeleteConfirmation = false
+    @State private var settings = AppSettingsStore.shared
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -707,13 +767,15 @@ struct VMCard: View {
                                 .cornerRadius(4)
                         }
 
-                        Text(vm.selectedDistro.shortLabel.uppercased())
-                            .font(.system(size: 8, weight: .bold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            .background(Color.white.opacity(0.08))
-                            .foregroundStyle(AnyShapeStyle(.secondary.opacity(0.8)))
-                            .cornerRadius(4)
+                        if !settings.workloadRuntime.isContainer {
+                            Text(vm.selectedDistro.shortLabel.uppercased())
+                                .font(.system(size: 8, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.08))
+                                .foregroundStyle(AnyShapeStyle(.secondary.opacity(0.8)))
+                                .cornerRadius(4)
+                        }
                         
                         Text(vm.stage.rawValue.uppercased())
                             .font(.system(size: 8, weight: .bold))
@@ -723,7 +785,7 @@ struct VMCard: View {
                             .foregroundStyle(AnyShapeStyle(Color.white.opacity(0.84)))
                             .cornerRadius(4)
                     }
-                    Text(vm.isInstalled ? vm.selectedDistro.rawValue : "Provisioning System...")
+                    Text(settings.workloadRuntime.isContainer ? (vm.containerImageReference.isEmpty ? "No image specified" : vm.containerImageReference) : (vm.isInstalled ? vm.selectedDistro.rawValue : "Provisioning System..."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -742,7 +804,7 @@ struct VMCard: View {
             // Resource Info
             HStack(spacing: 16) {
                 Label("\(vm.cpuCount) CPUs", systemImage: "memorychip")
-                Label("\(vm.memorySizeGB) GB RAM", systemImage: "bolt.fill")
+                Label("\(vm.memorySizeMB / 1024) GB RAM", systemImage: "bolt.fill")
                 Label("\(vm.systemDiskSizeGB) GB System", systemImage: "internaldrive")
                 Label("\(vm.dataDiskSizeGB) GB Data", systemImage: "externaldrive")
                 
@@ -811,68 +873,107 @@ struct PodsListView: View {
                 ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No pods or containers match your search"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                List {
-                    ForEach(filteredRunning) { vm in
-                        let showAllForVM = query.isEmpty || vm.name.localizedCaseInsensitiveContains(query)
-                        let visiblePods = showAllForVM ? vm.pods : vm.pods.filter {
-                            $0.name.localizedCaseInsensitiveContains(query) ||
-                            $0.namespace.localizedCaseInsensitiveContains(query) ||
-                            $0.status.localizedCaseInsensitiveContains(query) ||
-                            $0.cpu.localizedCaseInsensitiveContains(query) ||
-                            $0.ram.localizedCaseInsensitiveContains(query)
-                        }
-                        let visibleContainers = showAllForVM ? vm.containers : vm.containers.filter {
-                            $0.name.localizedCaseInsensitiveContains(query) ||
-                            $0.image.localizedCaseInsensitiveContains(query) ||
-                            $0.status.localizedCaseInsensitiveContains(query) ||
-                            $0.runtime.localizedCaseInsensitiveContains(query)
-                        }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        // Combined mesh + list inspired by OpenShift circles
+                        ContainerMeshView(vms: filteredRunning)
+                            .frame(height: 300)
+                            .frame(maxWidth: .infinity)
+                            .padding(8)
+                            .background(DashboardPalette.panel.opacity(0.22))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(DashboardPalette.border.opacity(0.55), lineWidth: 0.8)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
 
-                        Section {
-                            if visiblePods.isEmpty && visibleContainers.isEmpty {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("Detecting workloads…")
-                                        .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(filteredRunning) { vm in
+                                let showAllForVM = query.isEmpty || vm.name.localizedCaseInsensitiveContains(query)
+                                let visiblePods = showAllForVM ? vm.pods : vm.pods.filter {
+                                    $0.name.localizedCaseInsensitiveContains(query) ||
+                                    $0.namespace.localizedCaseInsensitiveContains(query) ||
+                                    $0.status.localizedCaseInsensitiveContains(query) ||
+                                    $0.cpu.localizedCaseInsensitiveContains(query) ||
+                                    $0.ram.localizedCaseInsensitiveContains(query)
                                 }
-                            }
+                                let visibleContainers = showAllForVM ? vm.containers : vm.containers.filter {
+                                    $0.name.localizedCaseInsensitiveContains(query) ||
+                                    $0.image.localizedCaseInsensitiveContains(query) ||
+                                    $0.status.localizedCaseInsensitiveContains(query) ||
+                                    $0.runtime.localizedCaseInsensitiveContains(query)
+                                }
 
-                            if !visiblePods.isEmpty {
-                                Text("Kubernetes Pods")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                ForEach(visiblePods) { pod in
-                                    PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
-                                }
-                            }
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text(vm.name)
+                                        let ipLabel = vm.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        if !ipLabel.isEmpty && !ipLabel.lowercased().contains("detect") {
+                                            Text("•")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary.opacity(0.5))
+                                            Text(ipLabel)
+                                                .font(.system(.caption2, design: .monospaced))
+                                                .foregroundStyle(.blue.opacity(0.8))
+                                        } else {
+                                            Text("•")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary.opacity(0.25))
+                                            Text("IP pending…")
+                                                .font(.system(.caption2, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        StatusBadge(state: vm.state)
+                                    }
 
-                            if !visibleContainers.isEmpty {
-                                Text("Docker Containers")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, visiblePods.isEmpty ? 0 : 8)
-                                ForEach(visibleContainers) { container in
-                                    ContainerRow(
-                                        name: container.name,
-                                        image: container.image,
-                                        status: container.status,
-                                        runtime: container.runtime
-                                    )
+                                    if visiblePods.isEmpty && visibleContainers.isEmpty {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Detecting workloads…")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    if !visiblePods.isEmpty {
+                                        Text("Kubernetes Pods")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                        ForEach(visiblePods) { pod in
+                                            PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
+                                        }
+                                    }
+
+                                    if !visibleContainers.isEmpty {
+                                        Text("Docker Containers")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.top, visiblePods.isEmpty ? 0 : 8)
+                                        ForEach(visibleContainers) { container in
+                                            ContainerRow(
+                                                name: container.name,
+                                                image: container.image,
+                                                status: container.status,
+                                                runtime: container.runtime
+                                            )
+                                        }
+                                    }
                                 }
-                            }
-                        } header: {
-                            HStack {
-                                Text(vm.name)
-                                Spacer()
-                                StatusBadge(state: vm.state)
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(OverlayTheme.panelStrong.opacity(0.5))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .stroke(DashboardPalette.border.opacity(0.8), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                         }
-                        .listRowBackground(Color.clear)
+                        .frame(maxWidth: .infinity)
                     }
+                    .padding(12)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
                 .background(DashboardPalette.surface)
             }
         }
@@ -1352,7 +1453,6 @@ struct NetworkListView: View {
             stopClusterTestLoop()
         }
     }
-
     private var query: String {
         search.trimmingCharacters(in: .whitespacesAndNewlines)
     }

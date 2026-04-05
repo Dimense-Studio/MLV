@@ -12,7 +12,7 @@ class VMConfigurationBuilder {
         
         // 1. Core Hardware
         config.cpuCount = vm.cpuCount
-        config.memorySize = UInt64(vm.memorySizeGB) * 1024 * 1024 * 1024
+        config.memorySize = UInt64(vm.memorySizeMB) * 1024 * 1024
         
         // 2. Storage & Bootloader
         let vmDir = VMStorageManager.shared.getVMRootDirectory(for: vm.id)

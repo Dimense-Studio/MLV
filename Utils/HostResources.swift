@@ -14,6 +14,29 @@ struct HostResources {
         Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024))
     }
     
+    static var systemAvailableMemoryMB: Int {
+        var pageSize: vm_size_t = 0
+        let hostPort = mach_host_self()
+        var hostSize = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
+        var statistics = vm_statistics64()
+        
+        host_page_size(hostPort, &pageSize)
+        
+        let status = withUnsafeMutablePointer(to: &statistics) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(hostSize)) {
+                host_statistics64(hostPort, HOST_VM_INFO64, $0, &hostSize)
+            }
+        }
+        
+        if status == KERN_SUCCESS {
+            // Available = free + inactive + speculative
+            let availablePages = UInt64(statistics.free_count) + UInt64(statistics.inactive_count) + UInt64(statistics.speculative_count)
+            return Int((availablePages * UInt64(pageSize)) / (1024 * 1024))
+        }
+        
+        return totalMemoryGB * 1024 - 2048 // Fallback: reserve 2GB
+    }
+    
     static var freeDiskSpaceGB: Int {
         let path = NSHomeDirectory()
         do {

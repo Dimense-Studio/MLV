@@ -7,9 +7,15 @@
 
 import SwiftUI
 import SwiftData
+import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ensure the custom app icon from Assets.xcassets/AppIcon.appiconset is used.
+        if let icon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = icon
+        }
+
         Task { @MainActor in
             AppNotifications.shared.requestIfNeeded()
             LoginItemManager.shared.setEnabled(AppSettingsStore.shared.launchAtLogin)

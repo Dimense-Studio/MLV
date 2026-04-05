@@ -21,8 +21,8 @@ final class VMListViewModel {
         self.init(vmManager: VMManager.shared)
     }
 
-    func snapshot(search: String) -> VMListSnapshot {
-        let all = vmManager?.virtualMachines ?? []
+    func snapshot(search: String, isContainerMode: Bool) -> VMListSnapshot {
+        let all = (vmManager?.virtualMachines ?? []).filter { $0.isContainerWorkload == isContainerMode }
         let filtered = all.filter { search.isEmpty ? true : $0.name.localizedCaseInsensitiveContains(search) }
         let runningCount = all.filter(\.state.isRunning).count
         let runningVMs = filtered.filter(\.state.isRunning)

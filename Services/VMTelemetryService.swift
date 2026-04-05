@@ -13,7 +13,8 @@ final class VMTelemetryService {
             .replacingOccurrences(of: " ", with: "-")
             .replacingOccurrences(of: "_", with: "-")
         let autoPattern = "mlv-\(normalizedVMName)"
-        let shellAutoPattern = shellSingleQuoted(autoPattern)
+        let processPattern = vm.monitoredProcessName.isEmpty ? autoPattern : vm.monitoredProcessName
+        let shellProcessPattern = shellSingleQuoted(processPattern)
         
         return """
         echo "---POLL_START---"
@@ -33,8 +34,8 @@ final class VMTelemetryService {
         awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {avail=$2} END {if (total>0) print "MEM_KB " total " " avail; else print "MEM_KB 0 0"}' /proc/meminfo 2>/dev/null
         df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print "DISK_PCT " $5}' || echo "DISK_PCT 0"
         PID=\(max(0, vm.monitoredProcessPID))
-        if [ "$PID" -le 1 ]; then
-          PID=$(pgrep -fo -- \(shellAutoPattern) 2>/dev/null || echo 0)
+        if [ "$PID" -le 1 ] || [ ! -r "/proc/$PID/stat" ]; then
+          PID=$(pgrep -fo -- \(shellProcessPattern) 2>/dev/null || echo 0)
         fi
         echo "PID_SELECTED $PID"
         if [ "$PID" -gt 0 ] && [ -r "/proc/$PID/stat" ]; then

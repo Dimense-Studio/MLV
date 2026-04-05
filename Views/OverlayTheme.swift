@@ -1,38 +1,23 @@
 import SwiftUI
 
 enum OverlayTheme {
-    private static var isContainerMode: Bool {
+    static var isContainerMode: Bool {
         UserDefaults.standard.string(forKey: "MLV_WorkloadRuntime") == "appleContainer"
     }
 
-    static var background: Color {
-        return Color.black
-    }
+    static var background: Color { Color.black }
 
     static var backgroundEdge: Color {
-        return Color.black
+        return background
     }
 
-    static var panel: Color {
-        if isContainerMode {
-            return Color(red: 0.42, green: 0.70, blue: 0.98).opacity(0.20)
-        }
-        return Color(red: 0.19, green: 0.19, blue: 0.19).opacity(0.95)
-    }
+    // Light glass tint for all cards
+    static var panel: Color { Color.white.opacity(0.08) }
 
-    static var panelStrong: Color {
-        if isContainerMode {
-            return Color(red: 0.52, green: 0.79, blue: 1.0).opacity(0.28)
-        }
-        return Color(red: 0.24, green: 0.24, blue: 0.24).opacity(0.96)
-    }
+    // Slightly stronger glass for emphasized blocks
+    static var panelStrong: Color { Color.white.opacity(0.12) }
 
-    static var border: Color {
-        if isContainerMode {
-            return Color(red: 0.66, green: 0.86, blue: 1.0).opacity(0.55)
-        }
-        return Color.white.opacity(0.14)
-    }
+    static var border: Color { Color.white.opacity(0.18) }
 
     static var textPrimary: Color {
         Color.white.opacity(0.92)
@@ -69,11 +54,15 @@ struct OverlayCanvasBackground: View {
                     let y = size.height * (0.5 + 0.3 * sin(t * 0.5 + Double(i) * 1.5))
                     let radius = min(size.width, size.height) * (0.3 + 0.1 * sin(t * 0.3))
                     
-                    let color = i % 2 == 0 ? Color.blue.opacity(0.12) : Color.purple.opacity(0.08)
+                    let tint: Color = OverlayTheme.isContainerMode
+                        ? (i % 2 == 0 ? Color.blue.opacity(0.12) : Color.cyan.opacity(0.10))
+                        : (i % 2 == 0 ? Color.purple.opacity(0.12) : Color.indigo.opacity(0.10))
+                    let color = tint
                     context.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)), with: .color(color))
                 }
                 
-                // Surface overlay removed to keep the animated colors unobstructed
+                // Subtle glass wash
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color.white.opacity(0.05)))
             }
             .blur(radius: 80)
         }
@@ -88,12 +77,12 @@ struct OverlayPanelModifier: ViewModifier {
         content
             .background(
                 VisualEffectView(
-                    material: .underWindowBackground,
+                    material: .hudWindow,
                     blendingMode: .withinWindow,
                     state: .active
                 )
             )
-            .background(OverlayTheme.panel.opacity(0.4))
+            .background(OverlayTheme.panel.opacity(0.7))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .stroke(OverlayTheme.border, lineWidth: 1)

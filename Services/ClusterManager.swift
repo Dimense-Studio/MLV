@@ -80,6 +80,16 @@ final class ClusterManager {
         let mbps: Double
     }
     
+    struct GlobalVMInfo: Codable, Hashable, Identifiable {
+        let id: UUID
+        let nodeID: String
+        let name: String
+        let publicKey: String
+        let wgAddress: String
+        let hostEndpoint: String
+        let hostPort: Int
+    }
+    
     private let rpcPort: NWEndpoint.Port = 7124
     private let maxRPCPayloadBytes = 160 * 1024 * 1024
     private let rpcReplyMaxBytes = 4 * 1024 * 1024
@@ -87,6 +97,7 @@ final class ClusterManager {
     private static let bandwidthBlob100MB = Data(repeating: 0xA5, count: 100 * 1024 * 1024)
     
     var nodes: [Node] = []
+    var clusterVMs: [GlobalVMInfo] = []
     
     private init() {}
     
@@ -101,6 +112,70 @@ final class ClusterManager {
                 self.refreshNodeInfo(for: host)
             }
         }
+        
+        // Load existing paired peers into nodes list
+        Task { @MainActor in
+            let peers = WireGuardManager.shared.peers
+            self.nodes = peers.map { peer in
+                Node(
+                    id: peer.id,
+                    name: peer.name,
+                    publicKey: peer.publicKey,
+                    endpointHost: peer.endpointHost,
+                    endpointPort: peer.endpointPort,
+                    addressCIDR: peer.addressCIDR,
+                    cpuCount: 0,
+                    memoryGB: 0,
+                    freeDiskGB: 0,
+                    lastSeen: Date()
+                )
+            }
+            await self.syncClusterVMs()
+        }
+        
+        // Periodically sync all VMs in the cluster
+        Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
+            Task { @MainActor in
+                await self.syncClusterVMs()
+            }
+        }
+    }
+    
+    private func syncClusterVMs() async {
+        var allVMs: [GlobalVMInfo] = []
+        
+        // Add local VMs
+        for vm in VMManager.shared.virtualMachines {
+            guard let pub = vm.wgControlPublicKeyBase64,
+                  let addr = vm.wgControlAddressCIDR else { continue }
+            allVMs.append(GlobalVMInfo(
+                id: vm.id,
+                nodeID: WireGuardManager.shared.hostInfo.id,
+                name: vm.name,
+                publicKey: pub,
+                wgAddress: addr,
+                hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
+                hostPort: vm.wgControlHostForwardPort
+            ))
+        }
+        
+        // Add remote VMs
+        for node in nodes {
+            do {
+                let vms = try await listVMsFull(on: node)
+                allVMs.append(contentsOf: vms)
+            } catch {
+                // Skip failed nodes
+            }
+        }
+        self.clusterVMs = allVMs
+    }
+
+    func listVMsFull(on node: Node) async throws -> [GlobalVMInfo] {
+        let req = RPCRequest(id: UUID().uuidString, type: "listVMsFull", payload: nil)
+        let resp = try await send(req, to: node)
+        guard resp.ok, let data = resp.payload else { return [] }
+        return try JSONDecoder().decode([GlobalVMInfo].self, from: data)
     }
     
     private func refreshNodeInfo(for host: DiscoveryManager.DiscoveredHost) {
@@ -240,6 +315,22 @@ final class ClusterManager {
     private func handle(_ req: RPCRequest) async -> RPCResponse {
         do {
             switch req.type {
+            case "listVMsFull":
+                let vms = VMManager.shared.virtualMachines.compactMap { vm -> GlobalVMInfo? in
+                    guard let pub = vm.wgControlPublicKeyBase64,
+                          let addr = vm.wgControlAddressCIDR else { return nil }
+                    return GlobalVMInfo(
+                        id: vm.id,
+                        nodeID: WireGuardManager.shared.hostInfo.id,
+                        name: vm.name,
+                        publicKey: pub,
+                        wgAddress: addr,
+                        hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
+                        hostPort: vm.wgControlHostForwardPort
+                    )
+                }
+                let payload = try JSONEncoder().encode(vms)
+                return RPCResponse(id: req.id, ok: true, payload: payload, errorMessage: nil)
             case "listVMs":
                 let vms = VMManager.shared.virtualMachines.map { vm in
                     VMInfo(
@@ -247,7 +338,7 @@ final class ClusterManager {
                         name: vm.name,
                         state: "\(vm.state)",
                         cpuCount: vm.cpuCount,
-                        memoryGB: vm.memorySizeGB
+                        memoryGB: vm.memorySizeMB / 1024
                     )
                 }
                 let payload = try JSONEncoder().encode(vms)
@@ -259,7 +350,7 @@ final class ClusterManager {
                 let vm = try await VMManager.shared.createLinuxVM(
                     name: spec.name,
                     cpus: spec.cpus,
-                    ramGB: spec.ramGB,
+                    ramMB: spec.ramGB * 1024,
                     sysDiskGB: spec.sysDiskGB,
                     dataDiskGB: spec.dataDiskGB,
                     isMaster: spec.isMaster,

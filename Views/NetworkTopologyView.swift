@@ -362,3 +362,226 @@ extension Collection {
         indices.contains(index) ? self[index] : nil
     }
 }
+
+struct ContainerMeshView: View {
+    struct MeshNode: Identifiable, Hashable {
+        enum Kind: String {
+            case proxy = "Load Balancer"
+            case service = "Application"
+            case database = "Backend / DB"
+            case unknown = "Workload"
+            
+            var icon: String {
+                switch self {
+                case .proxy: return "arrow.up.and.down.and.sparkles"
+                case .service: return "cube.fill"
+                case .database: return "cylinder.split.1x2.fill"
+                case .unknown: return "square.dashed"
+                }
+            }
+            
+            var color: Color {
+                switch self {
+                case .proxy: return .cyan
+                case .service: return .green
+                case .database: return .orange
+                case .unknown: return .gray
+                }
+            }
+        }
+        
+        let id: UUID
+        let name: String
+        let image: String
+        let kind: Kind
+        let ip: String
+    }
+    
+    let vms: [VirtualMachine]
+    @State private var flowPhase: CGFloat = 0
+    
+    private var meshNodes: [MeshNode] {
+        vms.map { vm in
+            let img = vm.containerImageReference.lowercased()
+            let kind: MeshNode.Kind
+            
+            if img.contains("nginx") || img.contains("proxy") || img.contains("traefik") || img.contains("caddy") || img.contains("haproxy") || img.contains("gateway") {
+                kind = .proxy
+            } else if img.contains("mysql") || img.contains("postgre") || img.contains("redis") || img.contains("db") || img.contains("mongo") || img.contains("db") {
+                kind = .database
+            } else {
+                kind = .service
+            }
+            
+            return MeshNode(
+                id: vm.id,
+                name: vm.name,
+                image: vm.containerImageReference,
+                kind: kind,
+                ip: vm.ipAddress
+            )
+        }
+    }
+    
+    private var connections: [(from: Int, to: Int)] {
+        var result: [(Int, Int)] = []
+        let nodes = meshNodes
+        let proxies = nodes.indices.filter { nodes[$0].kind == .proxy }
+        let services = nodes.indices.filter { nodes[$0].kind == .service }
+        let databases = nodes.indices.filter { nodes[$0].kind == .database }
+        
+        // Match Proxy to Services
+        for p in proxies {
+            for s in services {
+                result.append((p, s))
+            }
+        }
+        
+        // Match Services to Databases
+        for s in services {
+            for d in databases {
+                result.append((s, d))
+            }
+        }
+        
+        return result
+    }
+    
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                // Background Glow
+                RadialGradient(
+                    colors: [Color.cyan.opacity(0.08), Color.clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: min(geo.size.width, geo.size.height) * 0.6
+                )
+                
+                // Connection Lines
+                ForEach(0..<connections.count, id: \.self) { idx in
+                    let conn = connections[idx]
+                    ConnectionPath(
+                        from: position(for: conn.from, in: geo.size),
+                        to: position(for: conn.to, in: geo.size),
+                        phase: flowPhase
+                    )
+                    .stroke(
+                        meshNodes[conn.from].kind.color.opacity(0.4),
+                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [4, 6], dashPhase: flowPhase * 10)
+                    )
+                }
+                
+                // Nodes
+                ForEach(0..<meshNodes.count, id: \.self) { idx in
+                    let node = meshNodes[idx]
+                    MeshNodeView(node: node)
+                        .position(position(for: idx, in: geo.size))
+                }
+            }
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 10).repeatForever(autoreverses: false)) {
+                flowPhase = 1
+            }
+        }
+    }
+    
+    private func position(for index: Int, in size: CGSize) -> CGPoint {
+        let nodes = meshNodes
+        guard nodes.count > 0 else { return .zero }
+        let node = nodes[index]
+        
+        let proxies = nodes.filter { $0.kind == .proxy }
+        let services = nodes.filter { $0.kind == .service }
+        let dbs = nodes.filter { $0.kind == .database }
+        
+        let x: CGFloat
+        let y: CGFloat
+        
+        switch node.kind {
+        case .proxy:
+            x = size.width * 0.15
+            let i = CGFloat(proxies.firstIndex(of: node) ?? 0)
+            y = distribute(index: i, total: CGFloat(proxies.count), height: size.height)
+        case .service:
+            x = size.width * 0.5
+            let i = CGFloat(services.firstIndex(of: node) ?? 0)
+            y = distribute(index: i, total: CGFloat(services.count), height: size.height)
+        case .database:
+            x = size.width * 0.85
+            let i = CGFloat(dbs.firstIndex(of: node) ?? 0)
+            y = distribute(index: i, total: CGFloat(dbs.count), height: size.height)
+        case .unknown:
+            x = size.width * 0.5
+            y = size.height * 0.9
+        }
+        
+        return CGPoint(x: x, y: y)
+    }
+    
+    private func distribute(index: CGFloat, total: CGFloat, height: CGFloat) -> CGFloat {
+        if total <= 1 { return height / 2 }
+        let padding: CGFloat = 80
+        let available = height - (padding * 2)
+        return padding + (index / (total - 1)) * available
+    }
+}
+
+struct ConnectionPath: Shape {
+    let from: CGPoint
+    let to: CGPoint
+    let phase: CGFloat
+    
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: from)
+        
+        let control1 = CGPoint(x: from.x + (to.x - from.x) * 0.4, y: from.y)
+        let control2 = CGPoint(x: from.x + (to.x - from.x) * 0.6, y: to.y)
+        
+        path.addCurve(to: to, control1: control1, control2: control2)
+        return path
+    }
+}
+
+struct MeshNodeView: View {
+    let node: ContainerMeshView.MeshNode
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(node.kind.color.opacity(0.12))
+                    .frame(width: 48, height: 48)
+                    .overlay(
+                        Circle()
+                            .stroke(node.kind.color.opacity(0.4), lineWidth: 1)
+                    )
+                
+                Image(systemName: node.kind.icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(node.kind.color)
+            }
+            .shadow(color: node.kind.color.opacity(0.2), radius: 8)
+            
+            VStack(spacing: 2) {
+                Text(node.name)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                
+                Text(node.ip)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                
+                Text(node.kind.rawValue)
+                    .font(.system(size: 7, weight: .bold))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(node.kind.color.opacity(0.15), in: Capsule())
+                    .foregroundStyle(node.kind.color)
+            }
+        }
+        .frame(width: 100)
+    }
+}

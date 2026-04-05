@@ -6,6 +6,10 @@ final class AppSettingsStore {
     enum WorkloadRuntime: String, CaseIterable {
         case virtualization = "virtualization"
         case appleContainer = "appleContainer"
+        
+        var isContainer: Bool {
+            return self == .appleContainer
+        }
     }
 
     static let shared = AppSettingsStore()

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct VMConfigForm: View {
     @Environment(\.dismiss) private var dismiss
@@ -8,13 +9,35 @@ struct VMConfigForm: View {
         case drawer
     }
 
+    private func pickHostFolder(for mountID: UUID) {
+        pendingMountSelection = mountID
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Select Folder"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            if let index = containerMounts.firstIndex(where: { $0.id == mountID }) {
+                containerMounts[index].hostPath = url.path
+                // If the guest path is empty or still at the default placeholder, propose a sensible mount point.
+                let currentGuest = containerMounts[index].containerPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                if currentGuest.isEmpty || currentGuest == "/mnt/shared" {
+                    let name = url.lastPathComponent.isEmpty ? "shared" : url.lastPathComponent
+                    containerMounts[index].containerPath = "/mnt/shared/\(name)"
+                }
+            }
+        }
+    }
+
     @Binding var isPresented: Bool
     let vmToEdit: VirtualMachine?
     var presentationStyle: PresentationStyle = .sheet
 
     @State private var vmName: String = ""
-    @State private var cpuCount: Int = 4
-    @State private var memoryGB: Int = 4
+    @State private var cpuCount: Int = 1
+    @State private var memoryMB: Int = 512
     @State private var systemDiskGB: Int = 40
     @State private var dataDiskGB: Int = 100
     @State private var useDedicatedLonghornDisk: Bool = true
@@ -28,12 +51,18 @@ struct VMConfigForm: View {
     @State private var enableSecondaryNetwork: Bool = false
     @State private var secondaryNetworkMode: VMNetworkMode = .nat
     @State private var secondaryBridgeName: String = ""
-    @State private var containerImageReference: String = "debian:testing"
+    @State private var containerImageReference: String = ""
     @State private var availableContainerImages: [ContainerImageInfo] = []
     @State private var selectedServerImagePreset: ServerImagePreset = .debian
+    @State private var isPulling: Bool = false
+    @State private var pullProgress: Double = 0
+    @State private var pullDetail: String = ""
+    @State private var containerMounts: [VirtualMachine.ContainerMount] = []
+    @State private var containerPorts: [VirtualMachine.ContainerPort] = []
+    @State private var pendingMountSelection: UUID?
 
     private let maxCores = max(1, HostResources.cpuCount - 2)
-    private let maxRAM = max(2, HostResources.totalMemoryGB - 2)
+    private let maxRAM_MB = max(128, (HostResources.totalMemoryGB * 1024) - 1024)
     private let freeDisk = HostResources.freeDiskSpaceGB
     private let interfaces = HostResources.getNetworkInterfaces()
     private var isEditing: Bool { vmToEdit != nil }
@@ -155,7 +184,7 @@ struct VMConfigForm: View {
             if let vm = vmToEdit {
                 vmName = vm.name
                 cpuCount = vm.cpuCount
-                memoryGB = vm.memorySizeGB
+                memoryMB = vm.memorySizeMB
                 systemDiskGB = vm.systemDiskSizeGB
                 dataDiskGB = vm.dataDiskSizeGB
                 useDedicatedLonghornDisk = vm.dataDiskSizeGB > 0
@@ -172,10 +201,24 @@ struct VMConfigForm: View {
                         selectedServerImagePreset = preset
                     }
                 }
+                containerMounts = vm.containerMounts
+                containerPorts = vm.containerPorts
             } else if vmName.isEmpty {
                 vmName = isContainerMode ? "container-\(Int.random(in: 100...999))" : "node-\(Int.random(in: 100...999))"
                 if !interfaces.isEmpty {
                     selectedNetworkMode = .bridge
+                }
+                
+                // Smart defaults based on available power
+                let availCPU = VMManager.shared.availableCPU
+                let availRAM = VMManager.shared.availableMemoryMB
+                
+                if isContainerMode {
+                    cpuCount = max(1, min(2, availCPU))
+                    memoryMB = max(256, min(2048, availRAM / 4))
+                } else {
+                    cpuCount = max(1, min(4, availCPU / 2))
+                    memoryMB = max(1024, min(8192, availRAM / 2))
                 }
             }
             if selectedBridgeName.isEmpty, let first = interfaces.first {
@@ -215,31 +258,22 @@ struct VMConfigForm: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
                             .disabled(isEditing)
-                        Picker("Role", selection: $isMaster) {
-                            Text("Worker").tag(false)
-                            Text("Master").tag(true)
+                        if !isContainerMode {
+                            Picker("Role", selection: $isMaster) {
+                                Text("Worker").tag(false)
+                                Text("Master").tag(true)
+                            }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
                     }
                 }
 
-                DashboardPanel {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(isContainerMode ? "Server Image Family" : "Distribution")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(DashboardPalette.textSecondary)
-                        if isContainerMode {
-                            Picker("Server Images", selection: $selectedServerImagePreset) {
-                                ForEach(ServerImagePreset.allCases) { preset in
-                                    Text(preset.rawValue).tag(preset)
-                                }
-                            }
-                            .onChange(of: selectedServerImagePreset) { _, newPreset in
-                                if availableContainerImages.first(where: { $0.reference == containerImageReference }) == nil {
-                                    containerImageReference = newPreset.imageReference
-                                }
-                            }
-                        } else {
+                if !isContainerMode {
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Distribution")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
                             Picker("Linux", selection: $selectedDistro) {
                                 ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
                                     Text(distro.rawValue).tag(distro)
@@ -255,15 +289,46 @@ struct VMConfigForm: View {
                             Text("Container Image")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(DashboardPalette.textSecondary)
-                            TextField("Image Reference (e.g. ubuntu:latest)", text: $containerImageReference)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.body, design: .monospaced))
+                            HStack(spacing: 12) {
+                                TextField("Image Reference (e.g. ubuntu:latest)", text: $containerImageReference)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(.body, design: .monospaced))
+                                
+                                Button {
+                                    pullImage()
+                                } label: {
+                                    if isPulling {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Text("Pull")
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isPulling || containerImageReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                            
+                            if isPulling {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ProgressView(value: pullProgress)
+                                        .progressViewStyle(.linear)
+                                    Text(pullDetail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
                             if !availableContainerImages.isEmpty {
                                 Picker("Local Images", selection: $containerImageReference) {
+                                    Text("--- Select image ---").tag("")
+                                    if !containerImageReference.isEmpty &&
+                                        !availableContainerImages.contains(where: { $0.reference == containerImageReference }) {
+                                        Text("Current: \(containerImageReference)").tag(containerImageReference)
+                                    }
                                     ForEach(availableContainerImages) { image in
                                         Text(image.reference).tag(image.reference)
                                     }
                                 }
+                                .pickerStyle(.menu)
                             }
                         }
                     }
@@ -283,17 +348,43 @@ struct VMConfigForm: View {
                                     .foregroundStyle(cpuCount > maxCores ? Color.red : DashboardPalette.textSecondary)
                             }
                         }
-                        CapacityBar(title: "Host CPU Budget", used: cpuCount, total: HostResources.cpuCount)
-                        Stepper(value: $memoryGB, in: 2...HostResources.totalMemoryGB, step: 2) {
+                        
+                        let totalCPU = HostResources.cpuCount
+                        let reservedCPU = VMManager.shared.totalAllocatedCPU - (isEditing ? (vmToEdit?.cpuCount ?? 0) : 0)
+                        let availCPU = VMManager.shared.availableCPU + (isEditing ? (vmToEdit?.cpuCount ?? 0) : 0)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            CapacityBar(title: "Host CPU Allocation", used: cpuCount, reserved: reservedCPU, total: totalCPU)
+                            Text("Available: \(availCPU) Cores")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(availCPU < cpuCount ? .red : .secondary)
+                        }
+
+                        Stepper(value: $memoryMB, in: 50...(HostResources.totalMemoryGB * 1024), step: 50) {
                             HStack {
                                 Text("RAM")
                                 Spacer()
-                                Text("\(memoryGB) GB")
+                                Text("\(memoryMB) MB")
                                     .font(.system(.body, design: .monospaced))
-                                    .foregroundStyle(memoryGB > maxRAM ? Color.red : DashboardPalette.textSecondary)
+                                    .foregroundStyle(memoryMB > maxRAM_MB ? Color.red : DashboardPalette.textSecondary)
                             }
                         }
-                        CapacityBar(title: "Host RAM Budget", used: memoryGB, total: HostResources.totalMemoryGB)
+
+                        let totalRAM = HostResources.totalMemoryGB * 1024
+                        let reservedRAM = VMManager.shared.totalAllocatedMemoryMB - (isEditing ? (vmToEdit?.memorySizeMB ?? 0) : 0)
+                        let availRAM = VMManager.shared.availableMemoryMB + (isEditing ? (vmToEdit?.memorySizeMB ?? 0) : 0)
+                        let systemAvail = HostResources.systemAvailableMemoryMB
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            CapacityBar(title: "Host RAM Allocation", used: memoryMB, reserved: reservedRAM, total: totalRAM)
+                            HStack {
+                                Text("Available: \(availRAM) MB")
+                                Spacer()
+                                Text("System Free: \(systemAvail) MB")
+                            }
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(availRAM < memoryMB ? .red : .secondary)
+                        }
                         if !isContainerMode {
                             Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
                                 HStack {
@@ -368,6 +459,125 @@ struct VMConfigForm: View {
                             }
                         }
                     }
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Volumes & Shared Folders")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            
+                            if containerMounts.isEmpty {
+                                Text("No shared folders configured")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            ForEach($containerMounts) { $mount in
+                                VStack(spacing: 8) {
+                                    HStack {
+                                        TextField("Host Path", text: $mount.hostPath)
+                                            .textFieldStyle(.roundedBorder)
+                                        Button {
+                                            pickHostFolder(for: mount.id)
+                                        } label: {
+                                            Image(systemName: "folder.badge.plus")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        Image(systemName: "arrow.right")
+                                            .foregroundStyle(.secondary)
+                                        TextField("Guest Path", text: $mount.containerPath)
+                                            .textFieldStyle(.roundedBorder)
+                                    }
+                                    HStack {
+                                        Toggle("Read Only", isOn: $mount.isReadOnly)
+                                            .font(.caption)
+                                        Spacer()
+                                        Button(role: .destructive) {
+                                            containerMounts.removeAll(where: { $0.id == mount.id })
+                                        } label: {
+                                            Label("Remove", systemImage: "trash")
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.red.opacity(0.8))
+                                    }
+                                    Text("Inside VM, this will appear at \(mount.containerPath)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(8)
+                                .background(Color.white.opacity(0.03))
+                                .cornerRadius(8)
+                            }
+                            
+                            Button {
+                                containerMounts.append(VirtualMachine.ContainerMount(hostPath: "", containerPath: "/mnt/shared"))
+                            } label: {
+                                Label("Add Shared Folder", systemImage: "plus.circle")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    DashboardPanel {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Network Port Forwarding")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DashboardPalette.textSecondary)
+                            
+                            if containerPorts.isEmpty {
+                                Text("No ports exposed")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            ForEach($containerPorts) { $port in
+                                VStack(spacing: 8) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("Host Port").font(.caption2).foregroundStyle(.secondary)
+                                            TextField("Host", value: $port.hostPort, format: .number)
+                                                .textFieldStyle(.roundedBorder)
+                                        }
+                                        Image(systemName: "arrow.right")
+                                            .padding(.top, 16)
+                                            .foregroundStyle(.secondary)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("Guest Port").font(.caption2).foregroundStyle(.secondary)
+                                            TextField("Guest", value: $port.containerPort, format: .number)
+                                                .textFieldStyle(.roundedBorder)
+                                        }
+                                    }
+                                    HStack {
+                                        Picker("Protocol", selection: $port.protocolName) {
+                                            Text("TCP").tag("tcp")
+                                            Text("UDP").tag("udp")
+                                        }
+                                        .pickerStyle(.segmented)
+                                        .frame(width: 120)
+                                        
+                                        Spacer()
+                                        
+                                        Button(role: .destructive) {
+                                            containerPorts.removeAll(where: { $0.id == port.id })
+                                        } label: {
+                                            Label("Kill", systemImage: "trash")
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.red.opacity(0.8))
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color.white.opacity(0.03))
+                                .cornerRadius(8)
+                            }
+                            
+                            Button {
+                                containerPorts.append(VirtualMachine.ContainerPort(hostPort: 8080, containerPort: 80))
+                            } label: {
+                                Label("Add Port Mapping", systemImage: "plus.circle")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
                 }
             }
             .padding(16)
@@ -395,6 +605,31 @@ struct VMConfigForm: View {
         .disabled(isDeploying)
     }
 
+    private func pullImage() {
+        let reference = containerImageReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reference.isEmpty else { return }
+        
+        isPulling = true
+        pullProgress = 0
+        pullDetail = "Initializing pull..."
+        
+        Task {
+            do {
+                try await VMManager.shared.pullContainerImage(reference: reference) { progress, detail in
+                    Task { @MainActor in
+                        self.pullProgress = progress
+                        self.pullDetail = detail
+                    }
+                }
+                isPulling = false
+                availableContainerImages = (try? await VMManager.shared.listContainerImages()) ?? []
+            } catch {
+                errorMessage = "Pull failed: \(error.localizedDescription)"
+                isPulling = false
+            }
+        }
+    }
+
     private func closeForm() {
         isPresented = false
         if presentationStyle == .sheet {
@@ -408,7 +643,7 @@ struct VMConfigForm: View {
             do {
                 if let vm = vmToEdit {
                     vm.cpuCount = cpuCount
-                    vm.memorySizeGB = memoryGB
+                    vm.memorySizeMB = memoryMB
                     if vm.state == .stopped && !isContainerMode {
                         vm.systemDiskSizeGB = systemDiskGB
                         vm.dataDiskSizeGB = useDedicatedLonghornDisk ? dataDiskGB : 0
@@ -418,6 +653,8 @@ struct VMConfigForm: View {
                     if isContainerMode {
                         let selected = containerImageReference.trimmingCharacters(in: .whitespacesAndNewlines)
                         vm.containerImageReference = selected.isEmpty ? selectedServerImagePreset.imageReference : selected
+                        vm.containerMounts = containerMounts
+                        vm.containerPorts = containerPorts
                     } else {
                         vm.networkMode = selectedNetworkMode
                         vm.bridgeInterfaceName = selectedNetworkMode == .bridge ? selectedBridgeName : nil
@@ -425,10 +662,6 @@ struct VMConfigForm: View {
                         vm.secondaryNetworkMode = secondaryNetworkMode
                         vm.secondaryBridgeInterfaceName = (enableSecondaryNetwork && secondaryNetworkMode == .bridge) ? secondaryBridgeName : nil
                     }
-                    vm.monitoredProcessName = "mlv-" + vm.name
-                        .lowercased()
-                        .replacingOccurrences(of: " ", with: "-")
-                        .replacingOccurrences(of: "_", with: "-")
                     vm.persist()
                     isDeploying = false
                     closeForm()
@@ -438,7 +671,7 @@ struct VMConfigForm: View {
                 _ = try await VMManager.shared.createLinuxVM(
                     name: vmName,
                     cpus: cpuCount,
-                    ramGB: memoryGB,
+                    ramMB: memoryMB,
                     sysDiskGB: isContainerMode ? 20 : systemDiskGB,
                     dataDiskGB: isContainerMode ? 0 : (useDedicatedLonghornDisk ? dataDiskGB : 0),
                     isMaster: isMaster,
@@ -447,6 +680,8 @@ struct VMConfigForm: View {
                         let selected = containerImageReference.trimmingCharacters(in: .whitespacesAndNewlines)
                         return selected.isEmpty ? selectedServerImagePreset.imageReference : selected
                     }() : nil,
+                    containerMounts: containerMounts,
+                    containerPorts: containerPorts,
                     networkMode: isContainerMode ? .nat : selectedNetworkMode,
                     bridgeInterfaceName: isContainerMode ? nil : selectedBridgeName,
                     secondaryNetworkEnabled: isContainerMode ? false : enableSecondaryNetwork,
@@ -466,17 +701,24 @@ struct VMConfigForm: View {
 
 struct CapacityBar: View {
     let title: String
-    let used: Int
+    let used: Int // This selection
+    var reserved: Int = 0 // Already used by other VMs
     let total: Int
 
-    private var ratio: Double {
+    private var ratioUsed: Double {
         guard total > 0 else { return 0 }
-        return min(1.0, max(0.0, Double(used) / Double(total)))
+        return min(1.0, Double(used) / Double(total))
+    }
+    
+    private var ratioReserved: Double {
+        guard total > 0 else { return 0 }
+        return min(1.0, Double(reserved) / Double(total))
     }
 
     private var barColor: Color {
-        if ratio >= 0.9 { return Color.white.opacity(0.92) }
-        if ratio >= 0.75 { return Color.white.opacity(0.78) }
+        let totalRatio = (Double(used + reserved) / Double(total))
+        if totalRatio >= 0.95 { return .red.opacity(0.8) }
+        if totalRatio >= 0.8 { return .orange.opacity(0.8) }
         return Color.white.opacity(0.62)
     }
 
@@ -487,16 +729,24 @@ struct CapacityBar: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(used)/\(total)")
+                Text("\(used + reserved)/\(total)")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(barColor)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.08))
+                    
+                    // Reserved segment
+                    Capsule()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: max(0, geo.size.width * ratioReserved))
+                    
+                    // Current selection segment
                     Capsule()
                         .fill(barColor)
-                        .frame(width: max(6, geo.size.width * ratio))
+                        .frame(width: max(6, geo.size.width * ratioUsed))
+                        .offset(x: geo.size.width * ratioReserved)
                 }
             }
             .frame(height: 8)

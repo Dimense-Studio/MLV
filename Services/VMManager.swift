@@ -3,11 +3,12 @@ import Virtualization
 import SwiftUI
 import AppKit
 import os
+import Darwin
 
 @MainActor
 @Observable
-class VMManager {
-    static let shared = VMManager()
+public final class VMManager {
+    public static let shared = VMManager()
     private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMManager")
     var virtualMachines: [VirtualMachine] = []
     
@@ -19,6 +20,7 @@ class VMManager {
     private let serialWriteQueue = DispatchQueue(label: "dimense.net.MLV.serial-write", qos: .utility)
     private var pendingPollWrites: Set<UUID> = []
     private var pollBuffers: [UUID: String] = [:]
+    private var hostProcessCPUSnapshots: [Int: (timestamp: Date, totalCPUSeconds: Double)] = [:]
     private var lastIPAddressDetectionAt: [UUID: Date] = [:]
     private var restartingVMs: Set<UUID> = []
     private var vmPressureStartTimes: [UUID: Date] = [:]
@@ -27,8 +29,26 @@ class VMManager {
     private var hostPressureNotified = false
     private var knownRemoteNodeIDs: Set<String> = []
     
+    // Resource tracking
+    var totalAllocatedCPU: Int {
+        virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.cpuCount }
+    }
+    
+    var totalAllocatedMemoryMB: Int {
+        virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.memorySizeMB }
+    }
+    
+    var availableCPU: Int {
+        max(0, HostResources.cpuCount - totalAllocatedCPU)
+    }
+    
+    var availableMemoryMB: Int {
+        max(0, (HostResources.totalMemoryGB * 1024) - totalAllocatedMemoryMB)
+    }
+    
     // Persistent ISO authorization
     private let isoBookmarkKey = "MLV_ISO_Bookmark"
+    private var assignedHostServicePIDs = Set<Int32>()
     
     private var useAppleContainerRuntime: Bool {
         AppSettingsStore.shared.workloadRuntime == .appleContainer
@@ -64,12 +84,12 @@ class VMManager {
             // We use a placeholder URL as the actual ISO will be staged/cached if needed
             let placeholderURL = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder.iso")
             
-            let vm = VirtualMachine(
-                id: meta.id,
-                name: meta.name,
-                isoURL: placeholderURL,
-                cpus: meta.cpuCount,
-                ramGB: meta.memorySizeGB,
+        let vm = VirtualMachine(
+            id: meta.id,
+            name: meta.name,
+            isoURL: placeholderURL,
+            cpus: meta.cpuCount,
+                ramMB: meta.memorySizeMB,
                 sysDiskGB: meta.systemDiskSizeGB,
                 dataDiskGB: meta.dataDiskSizeGB
             )
@@ -86,9 +106,10 @@ class VMManager {
             vm.secondaryNetworkEnabled = meta.secondaryNetworkEnabled ?? false
             vm.secondaryNetworkMode = VMNetworkMode(rawValue: meta.secondaryNetworkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
             vm.secondaryBridgeInterfaceName = meta.secondaryBridgeInterfaceName
-            vm.monitoredProcessPID = meta.monitoredProcessPID ?? 1
-            vm.monitoredProcessName = meta.monitoredProcessName ?? ""
-            vm.stage = VMStage(rawValue: meta.stage) ?? vm.stage
+        vm.monitoredProcessPID = meta.monitoredProcessPID ?? 1
+        vm.monitoredProcessName = meta.monitoredProcessName ?? ""
+        vm.stage = VMStage(rawValue: meta.stage) ?? vm.stage
+        vm.isContainerWorkload = meta.isContainerWorkload ?? false
             if meta.isInstalled {
                 vm.isInstalled = true
             }
@@ -105,6 +126,12 @@ class VMManager {
             vm.wgDataHostForwardPort = meta.wgDataHostForwardPort ?? vm.wgDataHostForwardPort
             vm.autoStartOnLaunch = meta.autoStartOnLaunch ?? false
             vm.containerImageReference = meta.containerImageReference ?? ""
+            vm.containerMounts = meta.containerMounts ?? []
+            vm.containerPorts = meta.containerPorts ?? []
+            vm.hostServicePID = meta.hostServicePID
+            if let pid = vm.hostServicePID {
+                assignedHostServicePIDs.insert(Int32(pid))
+            }
             return vm
         }
     }
@@ -137,7 +164,7 @@ class VMManager {
                 title: "Container Runtime Error",
                 body: error.localizedDescription
             )
-            logger.error("Runtime mode switch failed: \(error.localizedDescription, privacy: .public)")
+            Logger(subsystem: "dimense.net.MLV", category: "VMManager").error("Runtime mode switch failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -184,44 +211,90 @@ class VMManager {
     
     func autoStartVMsIfNeeded() {
         Task { @MainActor in
+            logger.info("Initializing autostart sequence...")
             // Give launch-time services and VM metadata a moment to settle.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
 
-            for attempt in 1...3 {
-                let targets = self.virtualMachines.filter {
-                    $0.autoStartOnLaunch &&
+            for attempt in 1...2 {
+                let allTargets = self.virtualMachines.filter { $0.autoStartOnLaunch }
+                let targets = allTargets.filter {
                     (self.useAppleContainerRuntime || $0.isInstalled) &&
                     !$0.state.isRunning &&
                     $0.state != .starting
                 }
-                if targets.isEmpty { break }
+                
+                if allTargets.isEmpty { break }
+                if targets.isEmpty {
+                    logger.info("Autostart: No eligible targets out of \(allTargets.count) flagged VMs.")
+                    break
+                }
 
+                logger.info("Autostart attempt \(attempt): triggering \(targets.count) VMs.")
                 for vm in targets {
                     do {
                         try await self.startVM(vm)
-                        vm.addLog("Autostart succeeded.")
+                        vm.addLog("Autostart successful on attempt \(attempt).")
+                        logger.info("Autostart succeeded for \(vm.name)")
                     } catch {
                         vm.addLog("Autostart attempt \(attempt) failed: \(error.localizedDescription)", isError: true)
+                        logger.error("Autostart failed for \(vm.name): \(error.localizedDescription)")
                     }
-                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    // Stagger starts to prevent resource spikes
+                    try? await Task.sleep(nanoseconds: 800_000_000)
                 }
 
                 if attempt < 3 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
             }
+            logger.info("Autostart sequence completed.")
         }
     }
     
     private func startDataPolling() {
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
             Task { @MainActor in
+                if self.useAppleContainerRuntime {
+                    self.updateContainerStats()
+                }
                 for vm in self.virtualMachines where vm.state == .running {
                     self.updateDetectedIPAddress(for: vm)
-                    self.pollVMData(vm)
+                    if vm.isContainerWorkload {
+                        // Container workloads get metrics from AppleContainerService stats.
+                    } else {
+                        self.pollVMData(vm)
+                        self.applyHostUsageFallbackIfNeeded(for: vm)
+                    }
                     self.evaluateVMHealth(vm)
                 }
                 self.evaluateLimitAlerts()
+            }
+        }
+    }
+
+    private func updateContainerStats() {
+        Task {
+            do {
+                let stats = try await AppleContainerService.shared.getStats()
+                await MainActor.run {
+                    for stat in stats {
+                        if let vm = self.virtualMachines.first(where: { candidate in
+                            guard candidate.isContainerWorkload else { return false }
+                            // Match by canonical name, VM display name, or UUID prefix to tolerate CLI naming differences.
+                            let canon = self.containerName(for: candidate)
+                            return stat.id == canon
+                                || stat.id == candidate.name
+                                || stat.id.hasPrefix(candidate.id.uuidString.prefix(8))
+                        }) {
+                            vm.guestCPUUsagePercent = Int(stat.cpuPercentage)
+                            vm.guestMemoryUsagePercent = Int(stat.memoryPercentage)
+                            vm.hasGuestUsageSample = true
+                            vm.lastHealthyPoll = Date()
+                        }
+                    }
+                }
+            } catch {
+                Logger(subsystem: "dimense.net.MLV", category: "VMManager").error("Failed to poll container stats: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -246,13 +319,76 @@ class VMManager {
 
         let handle = pipe.fileHandleForWriting
         let vmID = vm.id
-        serialWriteQueue.async { [weak self] in
-            defer {
-                Task { @MainActor in
-                    self?.pendingPollWrites.remove(vmID)
-                }
-            }
+        serialWriteQueue.async { [handle, data, vmID] in
             try? handle.write(contentsOf: data)
+            Task { @MainActor in
+                VMManager.shared.pendingPollWrites.remove(vmID)
+            }
+        }
+    }
+    
+    // Fallback when guest telemetry isn't available (e.g., early boot or missing cloud-init).
+    // Uses host-side process metrics for the captured virtualization helper PID.
+    private func applyHostUsageFallbackIfNeeded(for vm: VirtualMachine) {
+        // Once guest CPU ticks arrive, prefer guest telemetry and skip host-derived estimates.
+        guard vm.lastGuestCPUTotalTicks == nil else { return }
+        
+        // Ensure the recorded helper PID is still alive; if not, clear and wait for next detection.
+        if let helperPID = vm.hostServicePID, !isProcessAlive(helperPID) {
+            hostProcessCPUSnapshots[helperPID] = nil
+            vm.hostServicePID = nil
+            vm.hasGuestUsageSample = false
+        }
+        
+        let pid = vm.hostServicePID ?? vm.monitoredProcessPID
+        guard pid > 1, isProcessAlive(pid) else {
+            vm.hasGuestUsageSample = false
+            return
+        }
+        
+        guard let sample = hostProcessUsageSample(pid: pid, guestMemoryMB: vm.memorySizeMB) else {
+            vm.hasGuestUsageSample = false
+            return
+        }
+        
+        vm.guestCPUUsagePercent = sample.cpuPercent
+        vm.guestMemoryUsagePercent = sample.memPercent
+        vm.hasGuestUsageSample = true
+    }
+
+    private func isProcessAlive(_ pid: Int) -> Bool {
+        let result = kill(pid_t(pid), 0)
+        if result == 0 { return true }
+        return errno == EPERM // Exists but not permitted
+    }
+    
+    private func hostProcessUsageSample(pid: Int, guestMemoryMB: Int) -> (cpuPercent: Int, memPercent: Int)? {
+        var info = rusage_info_current()
+        // proc_pid_rusage expects a pointer to rusage_info_t?, which itself is a pointer type.
+        // Rebind the stack struct's pointer to match the expected double-pointer signature.
+        let result = withUnsafeMutablePointer(to: &info) { infoPtr in
+            infoPtr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPtr in
+                proc_pid_rusage(pid_t(pid), RUSAGE_INFO_CURRENT, reboundPtr)
+            }
+        }
+        guard result == 0 else { return nil }
+        
+        let totalCPUSeconds = Double(info.ri_user_time + info.ri_system_time) / 1_000_000_000.0
+        let now = Date()
+        
+        let memBytes = Double(info.ri_resident_size)
+        let memPercent = Int(min(100, max(0, (memBytes / (Double(guestMemoryMB) * 1024.0 * 1024.0)) * 100.0)))
+        
+        if let last = hostProcessCPUSnapshots[pid], now.timeIntervalSince(last.timestamp) > 0.5, totalCPUSeconds >= last.totalCPUSeconds {
+            let deltaCPU = totalCPUSeconds - last.totalCPUSeconds
+            let deltaT = now.timeIntervalSince(last.timestamp)
+            guard deltaT > 0 else { return nil }
+            let cpuPercent = Int(min(400, max(0, (deltaCPU / deltaT) * 100.0)))
+            hostProcessCPUSnapshots[pid] = (now, totalCPUSeconds)
+            return (cpuPercent, memPercent)
+        } else {
+            hostProcessCPUSnapshots[pid] = (now, totalCPUSeconds)
+            return nil
         }
     }
     
@@ -282,13 +418,15 @@ class VMManager {
     func createLinuxVM(
         name: String? = nil,
         cpus: Int = 4,
-        ramGB: Int = 8,
+        ramMB: Int = 4096,
         sysDiskGB: Int = 64,
         dataDiskGB: Int = 100,
         isMaster: Bool = false,
         distro: VirtualMachine.LinuxDistro = .debian13,
         containerImageReference: String? = nil,
-        networkMode: VMNetworkMode = .bridge,
+        containerMounts: [VirtualMachine.ContainerMount] = [],
+        containerPorts: [VirtualMachine.ContainerPort] = [],
+        networkMode: VMNetworkMode = .nat,
         bridgeInterfaceName: String? = nil,
         secondaryNetworkEnabled: Bool = false,
         secondaryNetworkMode: VMNetworkMode = .nat,
@@ -298,10 +436,10 @@ class VMManager {
             throw VMError.virtualizationNotSupported
         }
         
-        let vmName = name ?? "Node \(virtualMachines.count + 1)"
+        let vmName = name ?? (useAppleContainerRuntime ? "container-\(virtualMachines.count + 1)" : "Node \(virtualMachines.count + 1)")
         let placeholderURL = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder.iso")
         
-        let vm = VirtualMachine(name: vmName, isoURL: placeholderURL, cpus: cpus, ramGB: ramGB, sysDiskGB: sysDiskGB, dataDiskGB: dataDiskGB)
+        let vm = VirtualMachine(name: vmName, isoURL: placeholderURL, cpus: cpus, ramMB: ramMB, sysDiskGB: sysDiskGB, dataDiskGB: dataDiskGB)
         vm.isMaster = isMaster
         vm.selectedDistro = distro
         vm.networkMode = networkMode
@@ -314,8 +452,13 @@ class VMManager {
         vm.clusterRole = isMaster ? .master : .node
         if useAppleContainerRuntime {
             vm.containerImageReference = containerImageReference?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            vm.containerMounts = containerMounts
+            vm.containerPorts = containerPorts
             vm.isInstalled = true
             vm.stage = .installed
+            vm.isContainerWorkload = true
+        } else {
+            vm.isContainerWorkload = false
         }
         
         let (controlPorts, dataPorts) = VMNetworkService.shared.allocateWireGuardPorts(for: vm.id)
@@ -390,7 +533,9 @@ class VMManager {
                     name: containerName(for: vm),
                     image: image,
                     cpus: vm.cpuCount,
-                    memoryGB: vm.memorySizeGB
+                    memoryMB: vm.memorySizeMB,
+                    mounts: vm.containerMounts,
+                    ports: vm.containerPorts
                 )
                 vm.addLog(message)
                 vm.isInstalled = true
@@ -443,8 +588,19 @@ class VMManager {
                 fileHandleForReading: readPipe.fileHandleForReading,
                 fileHandleForWriting: writePipe.fileHandleForWriting
             )
-            consoleDevice.ports.maximumPortCount = 1
-            consoleDevice.ports[0] = portConfig
+            
+            // Port 0: serial console for polling/logs.
+            // Port 1: SPICE agent for clipboard sharing (requires spice-vdagent in guest).
+            var portCount: UInt32 = 1
+            if #available(macOS 14.0, *) {
+                let spicePort = VZVirtioConsolePortConfiguration()
+                let spiceAttachment = VZSpiceAgentPortAttachment()
+                spiceAttachment.sharesClipboard = true
+                spicePort.attachment = spiceAttachment
+                consoleDevice.ports[1] = spicePort
+                portCount = 2
+            }
+            consoleDevice.ports.maximumPortCount = portCount
             configuration.consoleDevices = [consoleDevice]
             
             vm.serialWritePipe = writePipe
@@ -458,13 +614,14 @@ class VMManager {
             let delegate = VMRuntimeDelegate(vm: vm)
             v.delegate = delegate
             vm.vzVirtualMachine = v
-            vm.vzDelegate = delegate
-            
-            try await v.start()
-            vm.state = .running
-            vm.addLog("Virtualization engine started.")
-            refreshBackgroundExecution()
-            updateDetectedIPAddress(for: vm)
+        vm.vzDelegate = delegate
+        
+        try await v.start()
+        vm.state = .running
+        vm.addLog("Virtualization engine started.")
+        captureHostServicePID(for: vm)
+        refreshBackgroundExecution()
+        updateDetectedIPAddress(for: vm)
             pollVMData(vm)
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -567,11 +724,13 @@ class VMManager {
         vm.pods = VMPollingParser.parsePods(from: podsLines)
         vm.containers = VMPollingParser.parseContainers(from: containerLines)
         
+        if let ipLine = lines.first, !ipLine.isEmpty {
+            vm.ipAddress = ipLine
+            vm.isConnected = true
+        }
         if lines.count >= 3 {
-            vm.ipAddress = lines[0]
             vm.gateway = lines[1]
             vm.dns = lines[2].components(separatedBy: " ")
-            vm.isConnected = true
             ensureWireGuardForwarders(for: vm)
         }
     }
@@ -719,6 +878,21 @@ class VMManager {
         }
     }
 
+    // Associate the shared host helper process (Virtual Machine Service for MLV) with a VM instance.
+    private func captureHostServicePID(for vm: VirtualMachine) {
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "Virtual Machine Service for MLV" }
+        guard !apps.isEmpty else { return }
+        let candidates = apps.map { $0.processIdentifier }
+        let unassigned = candidates.filter { !assignedHostServicePIDs.contains($0) }
+        let pid = unassigned.first ?? candidates.first
+        if let pid, vm.hostServicePID == nil {
+            vm.hostServicePID = Int(pid)
+            assignedHostServicePIDs.insert(pid)
+            vm.addLog("Associated host VM service PID \(pid).")
+            vm.persist()
+        }
+    }
+
     private func captureInts(in text: String, pattern: String) -> [Int]? {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -740,7 +914,8 @@ class VMManager {
     }
 
     private func containerName(for vm: VirtualMachine) -> String {
-        "mlv-" + vm.id.uuidString.lowercased()
+        let prefix = String(vm.id.uuidString.lowercased().prefix(8))
+        return "mlv-\(prefix)"
     }
 
     private func containerImage(for vm: VirtualMachine) -> String {
@@ -750,7 +925,7 @@ class VMManager {
         }
         switch vm.selectedDistro {
         case .debian13:
-            return "debian:testing"
+            return "debian:latest"
         case .alpine:
             return "alpine:latest"
         case .ubuntu:
@@ -797,7 +972,7 @@ class VMManager {
         }
 
         let totalAllocatedCPU = virtualMachines.filter { $0.state == .running }.reduce(0) { $0 + $1.cpuCount }
-        let totalAllocatedMemoryGB = virtualMachines.filter { $0.state == .running }.reduce(0) { $0 + $1.memorySizeGB }
+        let totalAllocatedMemoryGB = virtualMachines.filter { $0.state == .running }.reduce(0) { $0 + $1.memorySizeMB } / 1024
         let hostCPUThreshold = max(1, Int(Double(HostResources.cpuCount) * 0.9))
         let hostMemoryThreshold = max(1, Int(Double(HostResources.totalMemoryGB) * 0.9))
         let hostDiskLowThresholdGB = 20
@@ -841,6 +1016,25 @@ class VMManager {
             return
         }
         lastIPAddressDetectionAt[vm.id] = now
+        
+        if useAppleContainerRuntime {
+            Task {
+                do {
+                    if let ip = try await AppleContainerService.shared.getContainerIPAsync(name: containerName(for: vm)) {
+                        await MainActor.run {
+                            if vm.ipAddress != ip {
+                                vm.ipAddress = ip
+                                vm.isConnected = true
+                                self.ensureWireGuardForwarders(for: vm)
+                            }
+                        }
+                    }
+                } catch {
+                    Logger(subsystem: "dimense.net.MLV", category: "VMManager").error("Failed to detect container IP for \(vm.name): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            return
+        }
 
         if vm.networkMode == .bridge, vm.bridgeInterfaceName == nil { return }
         guard let mac = storedMACAddress(for: vm) else { return }
@@ -1239,15 +1433,19 @@ class VMManager {
             vm.guestDiskUsagePercent = 0
             vm.hasGuestUsageSample = false
             vm.lastGuestCPUTotalTicks = nil
-            vm.lastGuestCPUIdleTicks = nil
-            vm.lastMonitoredProcessTicks = nil
-            vm.lastHealthyPoll = nil
-            vm.isConnected = false
-            wgForwarderTargetIP[vm.id] = nil
-            restartingVMs.remove(vm.id)
-            refreshBackgroundExecution()
-            return
+        vm.lastGuestCPUIdleTicks = nil
+        vm.lastMonitoredProcessTicks = nil
+        vm.lastHealthyPoll = nil
+        vm.isConnected = false
+        wgForwarderTargetIP[vm.id] = nil
+        if let pid = vm.hostServicePID {
+            assignedHostServicePIDs.remove(Int32(pid))
+            vm.hostServicePID = nil
         }
+        restartingVMs.remove(vm.id)
+        refreshBackgroundExecution()
+        return
+    }
 
         vm.userInitiatedStop = true
         try await vm.vzVirtualMachine?.stop()
@@ -1262,6 +1460,10 @@ class VMManager {
         serialReadPipes[vm.id]?.fileHandleForReading.readabilityHandler = nil
         try? serialReadPipes[vm.id]?.fileHandleForReading.close()
         try? vm.serialWritePipe?.fileHandleForWriting.close()
+        if let pid = vm.hostServicePID {
+            assignedHostServicePIDs.remove(Int32(pid))
+            vm.hostServicePID = nil
+        }
         serialReadPipes[vm.id] = nil
         pollBuffers[vm.id] = nil
         vm.serialWritePipe = nil
