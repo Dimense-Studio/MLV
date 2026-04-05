@@ -93,7 +93,7 @@ class VMConfigurationBuilder {
                     let injectedInitrd = (try? await fetchAndInjectPreseed(into: initrdURL, cacheDir: vmDir)) ?? initrdURL
                     let linuxBoot = VZLinuxBootLoader(kernelURL: kernelURL)
                     linuxBoot.initialRamdiskURL = injectedInitrd
-                    linuxBoot.commandLine = "auto priority=critical file=/preseed.cfg debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us --- quiet"
+                    linuxBoot.commandLine = "auto priority=critical preseed/file=/preseed.cfg debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us --- quiet"
                     config.bootLoader = linuxBoot
                     logger.info("INSTALL MODE: Zero-touch Debian with VZLinuxBootLoader (local preseed injection)")
                 } else {
@@ -321,10 +321,10 @@ class VMConfigurationBuilder {
         let preseedFile = cacheDir.appendingPathComponent("preseed.cfg")
         try data.write(to: preseedFile)
         
-        let cpioFile = cacheDir.appendingPathComponent("preseed.cpio")
+        let cpioFile = cacheDir.appendingPathComponent("preseed.cpio.gz")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "cd '\(cacheDir.path)' && echo 'preseed.cfg' | /usr/bin/cpio -o -H newc > preseed.cpio"]
+        process.arguments = ["-c", "cd '\(cacheDir.path)' && echo 'preseed.cfg' | /usr/bin/cpio -o -H newc | /usr/bin/gzip -c > preseed.cpio.gz"]
         try process.run()
         process.waitUntilExit()
         
