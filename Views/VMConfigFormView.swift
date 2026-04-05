@@ -60,6 +60,8 @@ struct VMConfigForm: View {
     @State private var containerMounts: [VirtualMachine.ContainerMount] = []
     @State private var containerPorts: [VirtualMachine.ContainerPort] = []
     @State private var pendingMountSelection: UUID?
+    @State private var zeroTouchEnabled: Bool = false
+    @State private var preseedHostIP: String = "192.168.64.1"
 
     private let maxCores = max(1, HostResources.cpuCount - 2)
     private let maxRAM_MB = max(128, (HostResources.totalMemoryGB * 1024) - 1024)
@@ -71,6 +73,16 @@ struct VMConfigForm: View {
     }
     private var primaryActionTitle: String {
         isEditing ? "Save" : (isContainerMode ? "Create Container" : "Deploy")
+    }
+    private var recommendedCPU: Int {
+        max(1, min(maxCores, HostResources.cpuCount / 2))
+    }
+    private var recommendedRAMMB: Int {
+        let quarter = HostResources.systemAvailableMemoryMB / 4
+        return min(maxRAM_MB, max(512, quarter))
+    }
+    private var recommendedSystemDiskGB: Int {
+        max(10, min(40, freeDisk / 4))
     }
 
     private enum ServerImagePreset: String, CaseIterable, Identifiable {
@@ -181,6 +193,8 @@ struct VMConfigForm: View {
             }
         }
         .onAppear {
+            clampInputs()
+            startPreseedIfNeeded()
             if let vm = vmToEdit {
                 vmName = vm.name
                 cpuCount = vm.cpuCount
@@ -279,6 +293,14 @@ struct VMConfigForm: View {
                                     Text(distro.rawValue).tag(distro)
                                 }
                             }
+                            if selectedDistro == .debian13 {
+                                Toggle("Zero-touch install (preseed)", isOn: $zeroTouchEnabled)
+                                    .onChange(of: zeroTouchEnabled) { _, newValue in
+                                        if newValue {
+                                            preseedHostIP = HostResources.defaultNATHostIP
+                                        }
+                                    }
+                            }
                         }
                     }
                 }
@@ -339,7 +361,20 @@ struct VMConfigForm: View {
                         Text("Resources")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(DashboardPalette.textSecondary)
-                        Stepper(value: $cpuCount, in: 1...HostResources.cpuCount, step: 1) {
+                        if !isEditing {
+                            Button {
+                                cpuCount = recommendedCPU
+                                memoryMB = recommendedRAMMB
+                                systemDiskGB = recommendedSystemDiskGB
+                                clampInputs()
+                            } label: {
+                                Label("Apply recommended (balanced)", systemImage: "wand.and.stars")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text("CPU")
                                 Spacer()
@@ -347,6 +382,23 @@ struct VMConfigForm: View {
                                     .font(.system(.body, design: .monospaced))
                                     .foregroundStyle(cpuCount > maxCores ? Color.red : DashboardPalette.textSecondary)
                             }
+                            HStack {
+                                Text("Recommended: \(recommendedCPU)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("Host: \(HostResources.cpuCount) cores")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(cpuCount) },
+                                    set: { cpuCount = Int($0.rounded()) }
+                                ),
+                                in: 1...Double(HostResources.cpuCount),
+                                step: 1
+                            )
                         }
                         
                         let totalCPU = HostResources.cpuCount
@@ -360,7 +412,7 @@ struct VMConfigForm: View {
                                 .foregroundStyle(availCPU < cpuCount ? .red : .secondary)
                         }
 
-                        Stepper(value: $memoryMB, in: 50...(HostResources.totalMemoryGB * 1024), step: 50) {
+                        VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text("RAM")
                                 Spacer()
@@ -368,6 +420,23 @@ struct VMConfigForm: View {
                                     .font(.system(.body, design: .monospaced))
                                     .foregroundStyle(memoryMB > maxRAM_MB ? Color.red : DashboardPalette.textSecondary)
                             }
+                            HStack {
+                                Text("Recommended: \(recommendedRAMMB) MB")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("Host free: \(HostResources.systemAvailableMemoryMB) MB")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(memoryMB) },
+                                    set: { memoryMB = Int($0.rounded() / 50.0) * 50 }
+                                ),
+                                in: 50...Double(HostResources.totalMemoryGB * 1024),
+                                step: 50
+                            )
                         }
 
                         let totalRAM = HostResources.totalMemoryGB * 1024
@@ -386,7 +455,7 @@ struct VMConfigForm: View {
                             .foregroundStyle(availRAM < memoryMB ? .red : .secondary)
                         }
                         if !isContainerMode {
-                            Stepper(value: $systemDiskGB, in: 5...200, step: 5) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text("System Disk")
                                     Spacer()
@@ -394,6 +463,23 @@ struct VMConfigForm: View {
                                         .font(.system(.body, design: .monospaced))
                                         .foregroundStyle(DashboardPalette.textSecondary)
                                 }
+                                HStack {
+                                    Text("Recommended: \(recommendedSystemDiskGB) GB")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("Host free: \(freeDisk) GB")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Slider(
+                                    value: Binding(
+                                        get: { Double(systemDiskGB) },
+                                        set: { systemDiskGB = Int($0.rounded() / 5.0) * 5 }
+                                    ),
+                                    in: 5...200,
+                                    step: 5
+                                )
                             }
                             CapacityBar(title: "Estimated Host Disk", used: systemDiskGB + (useDedicatedLonghornDisk ? dataDiskGB : 0), total: max(1, freeDisk))
                         }
@@ -409,16 +495,33 @@ struct VMConfigForm: View {
                             Toggle("Dedicated Longhorn Disk", isOn: $useDedicatedLonghornDisk)
                             if useDedicatedLonghornDisk {
                                 let maxData = max(5, freeDisk - systemDiskGB - 10)
-                                Stepper(value: $dataDiskGB, in: 5...maxData, step: 5) {
+                                let clampedMax = max(5.0, Double(maxData))
+                                let hasRoomForSlider = clampedMax > 5.0
+                                let effectiveData = min(Double(dataDiskGB), clampedMax)
+                                VStack(alignment: .leading, spacing: 6) {
                                     HStack {
                                         Text("Longhorn Disk")
                                         Spacer()
-                                        Text("\(dataDiskGB) GB")
+                                        Text("\(Int(effectiveData)) GB")
                                             .font(.system(.body, design: .monospaced))
-                                            .foregroundStyle((systemDiskGB + dataDiskGB) > freeDisk ? Color.red : DashboardPalette.textSecondary)
+                                            .foregroundStyle((systemDiskGB + Int(effectiveData)) > freeDisk ? Color.red : DashboardPalette.textSecondary)
+                                    }
+                                    if hasRoomForSlider {
+                                        Slider(
+                                            value: Binding(
+                                                get: { effectiveData },
+                                                set: { dataDiskGB = min(Int($0.rounded() / 5.0) * 5, Int(clampedMax)) }
+                                            ),
+                                            in: 5...clampedMax,
+                                            step: 5
+                                        )
+                                    } else {
+                                        Text("Not enough host disk headroom for a data disk.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
-                                CapacityBar(title: "Storage Pressure", used: systemDiskGB + dataDiskGB, total: max(1, freeDisk))
+                                CapacityBar(title: "Storage Pressure", used: systemDiskGB + Int(effectiveData), total: max(1, freeDisk))
                             }
                         }
                     }
@@ -686,7 +789,8 @@ struct VMConfigForm: View {
                     bridgeInterfaceName: isContainerMode ? nil : selectedBridgeName,
                     secondaryNetworkEnabled: isContainerMode ? false : enableSecondaryNetwork,
                     secondaryNetworkMode: isContainerMode ? .nat : secondaryNetworkMode,
-                    secondaryBridgeInterfaceName: isContainerMode ? nil : secondaryBridgeName
+                    secondaryBridgeInterfaceName: isContainerMode ? nil : secondaryBridgeName,
+                    zeroTouch: selectedDistro == .debian13 ? zeroTouchEnabled : false
                 )
 
                 isDeploying = false
@@ -696,6 +800,23 @@ struct VMConfigForm: View {
                 isDeploying = false
             }
         }
+    }
+    private func clampInputs() {
+        cpuCount = min(max(1, cpuCount), HostResources.cpuCount)
+        let maxRam = HostResources.totalMemoryGB * 1024
+        memoryMB = min(max(50, memoryMB), maxRam)
+        systemDiskGB = min(max(5, systemDiskGB), 200)
+        let maxData = max(5, HostResources.freeDiskSpaceGB - systemDiskGB - 10)
+        if dataDiskGB > maxData { dataDiskGB = maxData }
+        if dataDiskGB < 5 { dataDiskGB = 5 }
+        preseedHostIP = preseedHostIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preseedHostIP.isEmpty { preseedHostIP = "192.168.64.1" }
+    }
+
+    private func startPreseedIfNeeded() {
+        guard selectedDistro == .debian13, zeroTouchEnabled else { return }
+        preseedHostIP = HostResources.defaultNATHostIP
+        VMManager.shared.ensurePreseedServerRunning()
     }
 }
 

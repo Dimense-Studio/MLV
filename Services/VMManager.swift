@@ -1,6 +1,7 @@
 import Foundation
 import Virtualization
 import SwiftUI
+import Network
 import AppKit
 import os
 import Darwin
@@ -32,8 +33,56 @@ public final class VMManager {
     // Resource tracking
     var totalAllocatedCPU: Int {
         virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.cpuCount }
+}
+
+// Minimal inline HTTP server for serving preseed.cfg to the Debian installer.
+fileprivate final class InlinePreseedServer {
+    static let shared = InlinePreseedServer()
+    private let logger = Logger(subsystem: "dimense.net.MLV", category: "PreseedServer")
+    private var listener: NWListener?
+    private var preseedData: Data = Data()
+    private var port: UInt16 = 8088
+
+    func start(preseed: Data, port: UInt16 = 8088) {
+        self.preseedData = preseed
+        self.port = port
+        if listener != nil { return }
+        do {
+            let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+            listener.newConnectionHandler = { [weak self] conn in
+                guard let self else { return }
+                conn.start(queue: .global())
+                // Wait for the HTTP request to arrive before sending the response
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
+                    Task { @MainActor in
+                        conn.send(content: self.httpResponse(), completion: .contentProcessed { _ in
+                            conn.cancel()
+                        })
+                    }
+                }
+            }
+            listener.start(queue: .global())
+            self.listener = listener
+            logger.info("Preseed server started on port \(self.port)")
+        } catch {
+            logger.error("Failed to start preseed server: \(error.localizedDescription, privacy: .public)")
+        }
     }
-    
+
+    private func httpResponse() -> Data {
+        let header = """
+HTTP/1.1 200 OK\r
+Content-Type: text/plain\r
+Content-Length: \(preseedData.count)\r
+Connection: close\r
+\r
+"""
+        var response = Data(header.utf8)
+        response.append(preseedData)
+        return response
+    }
+}
+
     var totalAllocatedMemoryMB: Int {
         virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.memorySizeMB }
     }
@@ -430,7 +479,8 @@ public final class VMManager {
         bridgeInterfaceName: String? = nil,
         secondaryNetworkEnabled: Bool = false,
         secondaryNetworkMode: VMNetworkMode = .nat,
-        secondaryBridgeInterfaceName: String? = nil
+        secondaryBridgeInterfaceName: String? = nil,
+        zeroTouch: Bool = false
     ) async throws -> VirtualMachine {
         if !useAppleContainerRuntime && !VZVirtualMachine.isSupported {
             throw VMError.virtualizationNotSupported
@@ -450,6 +500,7 @@ public final class VMManager {
         vm.monitoredProcessPID = Int.random(in: 100...999_999)
         vm.monitoredProcessName = autoPattern(for: vm.name)
         vm.clusterRole = isMaster ? .master : .node
+        vm.zeroTouchInstall = zeroTouch
         if useAppleContainerRuntime {
             vm.containerImageReference = containerImageReference?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             vm.containerMounts = containerMounts
@@ -485,6 +536,7 @@ public final class VMManager {
         
         self.virtualMachines.append(vm)
         VMStatePersistence.shared.saveVMs(self.virtualMachines)
+        seedDebianAutomationIfNeeded(for: vm)
         
         do {
             try await startVM(vm)
@@ -509,6 +561,88 @@ public final class VMManager {
         return octet
     }
     
+    private func seedDebianAutomationIfNeeded(for vm: VirtualMachine) {
+        guard vm.selectedDistro == .debian13 else { return }
+        guard let sharedDir = try? VMStorageManager.shared.ensureVMSharedDirectoryExists(for: vm.id) else { return }
+        let preseed = debianPreseed()
+        let sources = """
+        deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+        deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+        deb http://security.debian.org/ trixie-security main contrib non-free non-free-firmware
+        """
+        let script = """
+        #!/bin/sh
+        set -e
+        MOUNTPOINT=/mnt/mlvshare
+        SUDO=""
+        if [ "$(id -u)" -ne 0 ]; then
+          SUDO="sudo"
+        fi
+
+        echo "Ensuring virtiofs shared folder is mounted at $MOUNTPOINT ..."
+        $SUDO mkdir -p "$MOUNTPOINT"
+        if ! grep -q "^mlvshare\\s" /etc/fstab; then
+          echo "mlvshare $MOUNTPOINT virtiofs defaults 0 0" | $SUDO tee -a /etc/fstab >/dev/null
+        fi
+        $SUDO mount "$MOUNTPOINT" || $SUDO mount -a || true
+
+        echo "Writing Debian sources.list with deb.debian.org mirrors..."
+        $SUDO cp "$MOUNTPOINT/sources.list" /etc/apt/sources.list
+        $SUDO apt-get update || true
+        echo "Installing spice-vdagent for clipboard..."
+        $SUDO apt-get install -y spice-vdagent || true
+        echo "Done. Reboot to enable clipboard sharing and keep the share mounted."
+        """
+        do {
+            try sources.trimmingCharacters(in: .whitespacesAndNewlines)
+                .appending("\n")
+                .write(to: sharedDir.appendingPathComponent("sources.list"), atomically: true, encoding: .utf8)
+            try script
+                .write(to: sharedDir.appendingPathComponent("fix-apt.sh"), atomically: true, encoding: .utf8)
+            try preseed
+                .write(to: sharedDir.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
+            InlinePreseedServer.shared.start(preseed: Data(preseed.utf8))
+            vm.addLog("Preseed server ready: http://192.168.64.1:8088/preseed.cfg (append to installer boot args)")
+        } catch {
+            logger.error("Failed to seed Debian mirror helper files: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func debianPreseed() -> String {
+        """
+        d-i debian-installer/locale string en_US.UTF-8
+        d-i console-setup/ask_detect boolean false
+        d-i console-setup/layoutcode string us
+        d-i keyboard-configuration/xkb-keymap select us
+        d-i time/zone string UTC
+        d-i clock-setup/utc boolean true
+        d-i netcfg/choose_interface select auto
+        d-i mirror/country string manual
+        d-i mirror/http/hostname string deb.debian.org
+        d-i mirror/http/directory string /debian
+        d-i mirror/suite string trixie
+        d-i mirror/http/proxy string
+        d-i apt-setup/non-free boolean true
+        d-i apt-setup/contrib boolean true
+        d-i passwd/root-login boolean true
+        d-i passwd/root-password password root
+        d-i passwd/root-password-again password root
+        d-i user-setup/allow-password-weak boolean true
+        d-i partman-auto/disk string /dev/vda
+        d-i partman-auto/method string lvm
+        d-i partman-lvm/device_remove_lvm boolean true
+        d-i partman-md/device_remove_md boolean true
+        d-i partman-auto/choose_recipe select atomic
+        d-i partman/confirm_write_new_label boolean true
+        d-i partman/confirm boolean true
+        d-i partman/confirm_nooverwrite boolean true
+        tasksel/first multiselect standard, ssh-server
+        popcon/participate boolean false
+        d-i pkgsel/include string spice-vdagent openssh-server curl
+        d-i finish-install/reboot_in_progress note
+        """
+    }
+
     func startVM(_ vm: VirtualMachine) async throws {
         try await VMLifecycleManager.shared.performOperation(for: vm.id) {
             try await self._startVMInternal(vm)
@@ -567,10 +701,9 @@ public final class VMManager {
                 let cachedISOURL = try await ensureCachedInstallerISO(for: vm, cacheDir: cacheDir)
                 let stagedISOURL = vmDir.appendingPathComponent("installer.iso")
                 
-                if !FileManager.default.fileExists(atPath: stagedISOURL.path) {
-                    vm.addLog("Staging ISO to VM storage...")
-                    try streamCopy(from: cachedISOURL, to: stagedISOURL)
-                }
+                vm.addLog("Staging ISO to VM storage (clean copy)...")
+                try streamCopy(from: cachedISOURL, to: stagedISOURL)
+                
                 vm.needsUserInteraction = true
                 vm.stage = .installing
             } else {
@@ -1336,7 +1469,7 @@ public final class VMManager {
         let cachedURL = cacheDir.appendingPathComponent(cacheFileName(for: vm.selectedDistro))
         
         if FileManager.default.fileExists(atPath: cachedURL.path) {
-            return cachedURL
+            return maybePreseeded(url: cachedURL, vm: vm, cacheDir: cacheDir)
         }
         
         if vm.selectedDistro == .debian13 {
@@ -1353,7 +1486,7 @@ public final class VMManager {
         
         vm.stage = .downloadingISO
         try await downloadISO(from: mirror, to: cachedURL, vm: vm)
-        return cachedURL
+        return maybePreseeded(url: cachedURL, vm: vm, cacheDir: cacheDir)
     }
 
     private func cacheFileName(for distro: VirtualMachine.LinuxDistro) -> String {
@@ -1362,6 +1495,13 @@ public final class VMManager {
         case .alpine: return "alpine.iso"
         case .ubuntu: return "ubuntu.iso"
         case .minimal: return "minimal.iso"
+        }
+    }
+
+    private func preseededCacheFileName(for distro: VirtualMachine.LinuxDistro) -> String {
+        switch distro {
+        case .debian13: return "debian-13-preseed.iso"
+        default: return cacheFileName(for: distro)
         }
     }
 
@@ -1407,6 +1547,73 @@ public final class VMManager {
             }
             if data.isEmpty { break }
             try writeHandle.write(contentsOf: data)
+        }
+    }
+
+    private func maybePreseeded(url: URL, vm: VirtualMachine, cacheDir: URL) -> URL {
+        // VZLinuxBootLoader passes the preseed URL natively via the kernel command line.
+        // We do not need to build a preseeded ISO with makehybrid, which can strip boot sectors
+        // and cause the Apple Virtualization Framework to reject the disk image.
+        return url
+    }
+
+    private func buildPreseededISO(from source: URL, to destination: URL, preseedURL: String) throws {
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let mountPoint = tempRoot.appendingPathComponent("mnt")
+        let workDir = tempRoot.appendingPathComponent("work")
+        try fm.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+
+        // Mount ISO
+        let attach = Process()
+        attach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        attach.arguments = ["attach", source.path, "-nobrowse", "-readonly", "-mountpoint", mountPoint.path]
+        try attach.run()
+        attach.waitUntilExit()
+
+        defer {
+            let detach = Process()
+            detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            detach.arguments = ["detach", mountPoint.path, "-force"]
+            try? detach.run()
+            let _ = try? detach.waitUntilExit()
+            try? fm.removeItem(at: tempRoot)
+        }
+
+        // Copy contents
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = [mountPoint.path, workDir.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+
+        // Patch isolinux/grub if present
+        patchBootConfigs(in: workDir, preseedURL: preseedURL)
+
+        // Rebuild ISO (best-effort)
+        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+        let make = Process()
+        make.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        make.arguments = ["makehybrid", "-iso", "-joliet", "-o", destination.path, workDir.path]
+        try make.run()
+        make.waitUntilExit()
+    }
+
+    private func patchBootConfigs(in dir: URL, preseedURL: String) {
+        let files = [
+            dir.appendingPathComponent("isolinux/txt.cfg"),
+            dir.appendingPathComponent("isolinux/isolinux.cfg"),
+            dir.appendingPathComponent("boot/grub/grub.cfg")
+        ]
+        for file in files where FileManager.default.fileExists(atPath: file.path) {
+            if var text = try? String(contentsOf: file, encoding: .utf8) {
+                if !text.contains("preseed/url") {
+                    text = text.replacingOccurrences(of: "append", with: "append auto priority=critical preseed/url=\(preseedURL) debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us", options: .literal, range: nil)
+                    text = text.replacingOccurrences(of: "linux", with: "linux auto priority=critical preseed/url=\(preseedURL) debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us", options: .literal, range: nil)
+                    try? text.write(to: file, atomically: true, encoding: .utf8)
+                }
+            }
         }
     }
     
@@ -1501,5 +1708,10 @@ public final class VMManager {
             virtualMachines.removeAll { $0.id == vm.id }
             VMStatePersistence.shared.saveVMs(self.virtualMachines)
         }
+    }
+
+    func ensurePreseedServerRunning() {
+        let preseed = debianPreseed()
+        InlinePreseedServer.shared.start(preseed: Data(preseed.utf8))
     }
 }

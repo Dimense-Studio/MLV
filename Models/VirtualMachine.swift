@@ -113,6 +113,11 @@ class VirtualMachine: Identifiable {
         didSet { persist() }
     }
 
+    /// When true, VM install should use preseed-based zero-touch flow (Debian only).
+    var zeroTouchInstall: Bool = false {
+        didSet { persist() }
+    }
+
     var autoStartOnLaunch: Bool = false {
         didSet { persist() }
     }

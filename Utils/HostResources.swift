@@ -148,6 +148,9 @@ struct HostResources {
         }
         return active.first?.type ?? .unknown
     }
+
+    /// Default NAT host IP for Apple Virtualization NAT (used for preseed URL hints).
+    static var defaultNATHostIP: String { "192.168.64.1" }
     
     private static func getIPAddress(for interface: String) -> String? {
         var address: String?

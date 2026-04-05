@@ -22,9 +22,11 @@ final class PreseedServer {
             listener.newConnectionHandler = { [weak self] conn in
                 guard let self else { return }
                 conn.start(queue: .global())
-                conn.send(content: self.httpResponse(), completion: .contentProcessed { _ in
-                    conn.cancel()
-                })
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
+                    conn.send(content: self.httpResponse(), completion: .contentProcessed { _ in
+                        conn.cancel()
+                    })
+                }
             }
             listener.start(queue: .global())
             self.listener = listener
