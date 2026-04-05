@@ -90,11 +90,11 @@ class VMConfigurationBuilder {
                     kernelInitrd = await fetchDebianNetbootKernel(cacheDir: vmDir)
                 }
                 if let (kernelURL, initrdURL) = kernelInitrd {
-                    let injectedInitrd = (try? await fetchAndInjectPreseed(into: initrdURL, cacheDir: vmDir)) ?? initrdURL
+                    let preseed = debianPreseed()
+                    let injectedInitrd = (try? await injectPreseed(preseed: preseed, into: initrdURL, cacheDir: vmDir)) ?? initrdURL
                     let linuxBoot = VZLinuxBootLoader(kernelURL: kernelURL)
                     linuxBoot.initialRamdiskURL = injectedInitrd
-                    // preseed/file= is the correct d-i kernel argument for a file embedded in the initrd
-                    linuxBoot.commandLine = "auto=true priority=critical preseed/file=/preseed.cfg DEBIAN_FRONTEND=noninteractive console=ttyAMA0 --- quiet"
+                    linuxBoot.commandLine = "auto=true priority=critical preseed/file=/preseed.cfg --- quiet"
                     config.bootLoader = linuxBoot
                     logger.info("INSTALL MODE: Zero-touch Debian with preseed injected into initrd")
                 } else {
@@ -240,6 +240,85 @@ class VMConfigurationBuilder {
             }
         }
         return nil
+    }
+
+    private func injectPreseed(preseed: String, into initrd: URL, cacheDir: URL) async throws -> URL {
+        let fm = FileManager.default
+        let work = cacheDir.appendingPathComponent("initrd-work-\(UUID().uuidString)")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        let initrdCopy = work.appendingPathComponent("initrd.gz")
+        if fm.fileExists(atPath: initrdCopy.path) { try fm.removeItem(at: initrdCopy) }
+        try fm.copyItem(at: initrd, to: initrdCopy)
+
+        try await runProcess("/usr/bin/gunzip", args: [initrdCopy.path])
+
+        let cpioPath = initrdCopy.deletingPathExtension().path
+        let preseedPath = work.appendingPathComponent("preseed.cfg")
+        try preseed.write(to: preseedPath, atomically: true, encoding: .utf8)
+
+        try await runProcess("/usr/bin/bash", args: ["-c", "cd \"\(work.path)\" && echo preseed.cfg | cpio -o -H newc -A -F \"\(cpioPath)\""])
+        try await runProcess("/usr/bin/gzip", args: ["-f", cpioPath])
+
+        let patched = cacheDir.appendingPathComponent("initrd-preseed.gz")
+        if fm.fileExists(atPath: patched.path) { try fm.removeItem(at: patched) }
+        try fm.copyItem(at: initrdCopy, to: patched)
+        try? fm.removeItem(at: work)
+        return patched
+    }
+
+    private func runProcess(_ path: String, args: [String]) async throws {
+        return try await withCheckedThrowingContinuation { cont in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: path)
+            p.arguments = args
+            p.terminationHandler = { proc in
+                if proc.terminationStatus == 0 {
+                    cont.resume()
+                } else {
+                    cont.resume(throwing: VMError.configurationInvalid("Process \(path) failed"))
+                }
+            }
+            do {
+                try p.run()
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
+    }
+
+    private func debianPreseed() -> String {
+        """
+        d-i debian-installer/locale string en_US.UTF-8
+        d-i console-setup/ask_detect boolean false
+        d-i console-setup/layoutcode string us
+        d-i keyboard-configuration/xkb-keymap select us
+        d-i time/zone string UTC
+        d-i clock-setup/utc boolean true
+        d-i netcfg/choose_interface select auto
+        d-i mirror/country string manual
+        d-i mirror/http/hostname string deb.debian.org
+        d-i mirror/http/directory string /debian
+        d-i mirror/suite string trixie
+        d-i mirror/http/proxy string
+        d-i apt-setup/non-free boolean true
+        d-i apt-setup/contrib boolean true
+        d-i passwd/root-login boolean true
+        d-i passwd/root-password password root
+        d-i passwd/root-password-again password root
+        d-i user-setup/allow-password-weak boolean true
+        d-i partman-auto/disk string /dev/vda
+        d-i partman-auto/method string lvm
+        d-i partman-lvm/device_remove_lvm boolean true
+        d-i partman-md/device_remove_md boolean true
+        d-i partman-auto/choose_recipe select atomic
+        d-i partman/confirm_write_new_label boolean true
+        d-i partman/confirm boolean true
+        d-i partman/confirm_nooverwrite boolean true
+        tasksel/first multiselect standard, ssh-server
+        popcon/participate boolean false
+        d-i pkgsel/include string spice-vdagent openssh-server curl
+        d-i finish-install/reboot_in_progress note
+        """
     }
     
     private func fetchDebianNetbootKernel(cacheDir: URL) async -> (URL, URL)? {

@@ -1494,7 +1494,7 @@ public final class VMManager {
             detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
             detach.arguments = ["detach", mountPoint.path, "-force"]
             try? detach.run()
-            let _ = try? detach.waitUntilExit()
+            detach.waitUntilExit()
             try? fm.removeItem(at: tempRoot)
         }
 
