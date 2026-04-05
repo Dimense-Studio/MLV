@@ -35,53 +35,7 @@ public final class VMManager {
         virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.cpuCount }
 }
 
-// Minimal inline HTTP server for serving preseed.cfg to the Debian installer.
-fileprivate final class InlinePreseedServer {
-    static let shared = InlinePreseedServer()
-    private let logger = Logger(subsystem: "dimense.net.MLV", category: "PreseedServer")
-    private var listener: NWListener?
-    private var preseedData: Data = Data()
-    private var port: UInt16 = 8088
 
-    func start(preseed: Data, port: UInt16 = 8088) {
-        self.preseedData = preseed
-        self.port = port
-        if listener != nil { return }
-        do {
-            let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
-            listener.newConnectionHandler = { [weak self] conn in
-                guard let self else { return }
-                conn.start(queue: .global())
-                // Wait for the HTTP request to arrive before sending the response
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
-                    Task { @MainActor in
-                        conn.send(content: self.httpResponse(), completion: .contentProcessed { _ in
-                            conn.cancel()
-                        })
-                    }
-                }
-            }
-            listener.start(queue: .global())
-            self.listener = listener
-            logger.info("Preseed server started on port \(self.port)")
-        } catch {
-            logger.error("Failed to start preseed server: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func httpResponse() -> Data {
-        let header = """
-HTTP/1.1 200 OK\r
-Content-Type: text/plain\r
-Content-Length: \(preseedData.count)\r
-Connection: close\r
-\r
-"""
-        var response = Data(header.utf8)
-        response.append(preseedData)
-        return response
-    }
-}
 
     var totalAllocatedMemoryMB: Int {
         virtualMachines.filter { $0.state == .running || $0.state == .starting }.reduce(0) { $0 + $1.memorySizeMB }
@@ -564,7 +518,7 @@ Connection: close\r
     private func seedDebianAutomationIfNeeded(for vm: VirtualMachine) {
         guard vm.selectedDistro == .debian13 else { return }
         guard let sharedDir = try? VMStorageManager.shared.ensureVMSharedDirectoryExists(for: vm.id) else { return }
-        let preseed = debianPreseed()
+
         let sources = """
         deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
         deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
@@ -599,49 +553,12 @@ Connection: close\r
                 .write(to: sharedDir.appendingPathComponent("sources.list"), atomically: true, encoding: .utf8)
             try script
                 .write(to: sharedDir.appendingPathComponent("fix-apt.sh"), atomically: true, encoding: .utf8)
-            try preseed
-                .write(to: sharedDir.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
-            InlinePreseedServer.shared.start(preseed: Data(preseed.utf8))
-            vm.addLog("Preseed server ready: http://192.168.64.1:8088/preseed.cfg (append to installer boot args)")
         } catch {
             logger.error("Failed to seed Debian mirror helper files: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func debianPreseed() -> String {
-        """
-        d-i debian-installer/locale string en_US.UTF-8
-        d-i console-setup/ask_detect boolean false
-        d-i console-setup/layoutcode string us
-        d-i keyboard-configuration/xkb-keymap select us
-        d-i time/zone string UTC
-        d-i clock-setup/utc boolean true
-        d-i netcfg/choose_interface select auto
-        d-i mirror/country string manual
-        d-i mirror/http/hostname string deb.debian.org
-        d-i mirror/http/directory string /debian
-        d-i mirror/suite string trixie
-        d-i mirror/http/proxy string
-        d-i apt-setup/non-free boolean true
-        d-i apt-setup/contrib boolean true
-        d-i passwd/root-login boolean true
-        d-i passwd/root-password password root
-        d-i passwd/root-password-again password root
-        d-i user-setup/allow-password-weak boolean true
-        d-i partman-auto/disk string /dev/vda
-        d-i partman-auto/method string lvm
-        d-i partman-lvm/device_remove_lvm boolean true
-        d-i partman-md/device_remove_md boolean true
-        d-i partman-auto/choose_recipe select atomic
-        d-i partman/confirm_write_new_label boolean true
-        d-i partman/confirm boolean true
-        d-i partman/confirm_nooverwrite boolean true
-        tasksel/first multiselect standard, ssh-server
-        popcon/participate boolean false
-        d-i pkgsel/include string spice-vdagent openssh-server curl
-        d-i finish-install/reboot_in_progress note
-        """
-    }
+
 
     func startVM(_ vm: VirtualMachine) async throws {
         try await VMLifecycleManager.shared.performOperation(for: vm.id) {
@@ -1710,8 +1627,5 @@ Connection: close\r
         }
     }
 
-    func ensurePreseedServerRunning() {
-        let preseed = debianPreseed()
-        InlinePreseedServer.shared.start(preseed: Data(preseed.utf8))
-    }
+
 }

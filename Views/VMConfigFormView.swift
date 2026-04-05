@@ -61,7 +61,7 @@ struct VMConfigForm: View {
     @State private var containerPorts: [VirtualMachine.ContainerPort] = []
     @State private var pendingMountSelection: UUID?
     @State private var zeroTouchEnabled: Bool = false
-    @State private var preseedHostIP: String = "192.168.64.1"
+
 
     private let maxCores = max(1, HostResources.cpuCount - 2)
     private let maxRAM_MB = max(128, (HostResources.totalMemoryGB * 1024) - 1024)
@@ -194,7 +194,7 @@ struct VMConfigForm: View {
         }
         .onAppear {
             clampInputs()
-            startPreseedIfNeeded()
+
             if let vm = vmToEdit {
                 vmName = vm.name
                 cpuCount = vm.cpuCount
@@ -295,11 +295,6 @@ struct VMConfigForm: View {
                             }
                             if selectedDistro == .debian13 {
                                 Toggle("Zero-touch install (preseed)", isOn: $zeroTouchEnabled)
-                                    .onChange(of: zeroTouchEnabled) { _, newValue in
-                                        if newValue {
-                                            preseedHostIP = HostResources.defaultNATHostIP
-                                        }
-                                    }
                             }
                         }
                     }
@@ -809,15 +804,10 @@ struct VMConfigForm: View {
         let maxData = max(5, HostResources.freeDiskSpaceGB - systemDiskGB - 10)
         if dataDiskGB > maxData { dataDiskGB = maxData }
         if dataDiskGB < 5 { dataDiskGB = 5 }
-        preseedHostIP = preseedHostIP.trimmingCharacters(in: .whitespacesAndNewlines)
-        if preseedHostIP.isEmpty { preseedHostIP = "192.168.64.1" }
+
     }
 
-    private func startPreseedIfNeeded() {
-        guard selectedDistro == .debian13, zeroTouchEnabled else { return }
-        preseedHostIP = HostResources.defaultNATHostIP
-        VMManager.shared.ensurePreseedServerRunning()
-    }
+
 }
 
 struct CapacityBar: View {
