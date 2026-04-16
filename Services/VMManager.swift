@@ -82,7 +82,7 @@ public final class VMManager {
     private func loadStoredVMs() {
         let metadata = VMStatePersistence.shared.loadVMs()
         self.virtualMachines = metadata.compactMap { meta in
-            guard let distro = VirtualMachine.LinuxDistro(rawValue: meta.selectedDistro) else { return nil }
+            let distro = VirtualMachine.LinuxDistro(rawValue: meta.selectedDistro) ?? .talos
             
             // We use a placeholder URL as the actual ISO will be staged/cached if needed
             let placeholderURL = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder.iso")
@@ -104,11 +104,28 @@ public final class VMManager {
             }
             vm.selectedDistro = distro
             vm.isMaster = meta.isMaster
-            vm.networkMode = VMNetworkMode(rawValue: meta.networkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
-            vm.bridgeInterfaceName = meta.bridgeInterfaceName
+            let supportsBridged = EntitlementChecker.hasEntitlement("com.apple.vm.networking")
+            let restoredPrimaryModeRaw = VMNetworkMode(rawValue: meta.networkMode ?? VMNetworkMode.bridge.rawValue) ?? .bridge
+            let restoredPrimaryMode: VMNetworkMode = distro == .talos ? .bridge : restoredPrimaryModeRaw
+            if supportsBridged, restoredPrimaryMode == .bridge,
+               let resolved = VMNetworkService.shared.resolveBridgeInterface(preferred: meta.bridgeInterfaceName) {
+                vm.networkMode = .bridge
+                vm.bridgeInterfaceName = resolved
+            } else {
+                vm.networkMode = .nat
+                vm.bridgeInterfaceName = nil
+            }
             vm.secondaryNetworkEnabled = meta.secondaryNetworkEnabled ?? false
-            vm.secondaryNetworkMode = VMNetworkMode(rawValue: meta.secondaryNetworkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
-            vm.secondaryBridgeInterfaceName = meta.secondaryBridgeInterfaceName
+            let restoredSecondaryMode = VMNetworkMode(rawValue: meta.secondaryNetworkMode ?? VMNetworkMode.nat.rawValue) ?? .nat
+            if supportsBridged, vm.secondaryNetworkEnabled, restoredSecondaryMode == .bridge,
+               let preferred = meta.secondaryBridgeInterfaceName, !preferred.isEmpty,
+               let resolved = VMNetworkService.shared.resolveBridgeInterface(preferred: preferred) {
+                vm.secondaryNetworkMode = .bridge
+                vm.secondaryBridgeInterfaceName = resolved
+            } else {
+                vm.secondaryNetworkMode = .nat
+                vm.secondaryBridgeInterfaceName = nil
+            }
         vm.monitoredProcessPID = meta.monitoredProcessPID ?? 1
         vm.monitoredProcessName = meta.monitoredProcessName ?? ""
         vm.stage = VMStage(rawValue: meta.stage) ?? vm.stage
@@ -401,6 +418,11 @@ public final class VMManager {
         // Trigger provisioning if needed
         VMProvisioningService.shared.provisionIfNeeded(vm)
         
+        // Talos does not emit Linux poll markers; use console activity as health signal.
+        if Date().timeIntervalSince(vm.lastConsoleActivity) < 180 {
+            vm.lastHealthyPoll = Date()
+        }
+        
         guard let last = vm.lastHealthyPoll else { return }
         if Date().timeIntervalSince(last) < 90 { return }
         if vm.userInitiatedStop { return }
@@ -420,21 +442,20 @@ public final class VMManager {
     
     func createLinuxVM(
         name: String? = nil,
-        cpus: Int = 4,
-        ramMB: Int = 4096,
+        cpus: Int = 8,
+        ramMB: Int = 16384,
         sysDiskGB: Int = 64,
         dataDiskGB: Int = 100,
         isMaster: Bool = false,
-        distro: VirtualMachine.LinuxDistro = .debian13,
+        distro: VirtualMachine.LinuxDistro = .talos,
         containerImageReference: String? = nil,
         containerMounts: [VirtualMachine.ContainerMount] = [],
         containerPorts: [VirtualMachine.ContainerPort] = [],
-        networkMode: VMNetworkMode = .nat,
+        networkMode: VMNetworkMode = .bridge,
         bridgeInterfaceName: String? = nil,
         secondaryNetworkEnabled: Bool = false,
         secondaryNetworkMode: VMNetworkMode = .nat,
-        secondaryBridgeInterfaceName: String? = nil,
-        zeroTouch: Bool = false
+        secondaryBridgeInterfaceName: String? = nil
     ) async throws -> VirtualMachine {
         if !useAppleContainerRuntime && !VZVirtualMachine.isSupported {
             throw VMError.virtualizationNotSupported
@@ -446,15 +467,20 @@ public final class VMManager {
         let vm = VirtualMachine(name: vmName, isoURL: placeholderURL, cpus: cpus, ramMB: ramMB, sysDiskGB: sysDiskGB, dataDiskGB: dataDiskGB)
         vm.isMaster = isMaster
         vm.selectedDistro = distro
-        vm.networkMode = networkMode
-        vm.bridgeInterfaceName = (networkMode == .bridge) ? VMNetworkService.shared.resolveBridgeInterface(preferred: bridgeInterfaceName) : nil
+        let supportsBridged = EntitlementChecker.hasEntitlement("com.apple.vm.networking")
+        let requestedPrimaryMode: VMNetworkMode = distro == .talos ? .bridge : networkMode
+        vm.networkMode = (supportsBridged && requestedPrimaryMode == .bridge) ? .bridge : .nat
+        vm.bridgeInterfaceName = vm.networkMode == .bridge
+            ? VMNetworkService.shared.resolveBridgeInterface(preferred: bridgeInterfaceName)
+            : nil
         vm.secondaryNetworkEnabled = secondaryNetworkEnabled
-        vm.secondaryNetworkMode = secondaryNetworkMode
-        vm.secondaryBridgeInterfaceName = (secondaryNetworkEnabled && secondaryNetworkMode == .bridge) ? VMNetworkService.shared.resolveBridgeInterface(preferred: secondaryBridgeInterfaceName) : nil
+        vm.secondaryNetworkMode = (supportsBridged && secondaryNetworkEnabled && secondaryNetworkMode == .bridge) ? .bridge : .nat
+        vm.secondaryBridgeInterfaceName = vm.secondaryNetworkMode == .bridge
+            ? VMNetworkService.shared.resolveBridgeInterface(preferred: secondaryBridgeInterfaceName)
+            : nil
         vm.monitoredProcessPID = Int.random(in: 100...999_999)
         vm.monitoredProcessName = autoPattern(for: vm.name)
         vm.clusterRole = isMaster ? .master : .node
-        vm.zeroTouchInstall = zeroTouch
         if useAppleContainerRuntime {
             vm.containerImageReference = containerImageReference?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             vm.containerMounts = containerMounts
@@ -490,8 +516,6 @@ public final class VMManager {
         
         self.virtualMachines.append(vm)
         VMStatePersistence.shared.saveVMs(self.virtualMachines)
-        seedDebianAutomationIfNeeded(for: vm)
-        
         do {
             try await startVM(vm)
         } catch {
@@ -515,51 +539,6 @@ public final class VMManager {
         return octet
     }
     
-    private func seedDebianAutomationIfNeeded(for vm: VirtualMachine) {
-        guard vm.selectedDistro == .debian13 else { return }
-        guard let sharedDir = try? VMStorageManager.shared.ensureVMSharedDirectoryExists(for: vm.id) else { return }
-
-        let sources = """
-        deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
-        deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
-        deb http://security.debian.org/ trixie-security main contrib non-free non-free-firmware
-        """
-        let script = """
-        #!/bin/sh
-        set -e
-        MOUNTPOINT=/mnt/mlvshare
-        SUDO=""
-        if [ "$(id -u)" -ne 0 ]; then
-          SUDO="sudo"
-        fi
-
-        echo "Ensuring virtiofs shared folder is mounted at $MOUNTPOINT ..."
-        $SUDO mkdir -p "$MOUNTPOINT"
-        if ! grep -q "^mlvshare\\s" /etc/fstab; then
-          echo "mlvshare $MOUNTPOINT virtiofs defaults 0 0" | $SUDO tee -a /etc/fstab >/dev/null
-        fi
-        $SUDO mount "$MOUNTPOINT" || $SUDO mount -a || true
-
-        echo "Writing Debian sources.list with deb.debian.org mirrors..."
-        $SUDO cp "$MOUNTPOINT/sources.list" /etc/apt/sources.list
-        $SUDO apt-get update || true
-        echo "Installing spice-vdagent for clipboard..."
-        $SUDO apt-get install -y spice-vdagent || true
-        echo "Done. Reboot to enable clipboard sharing and keep the share mounted."
-        """
-        do {
-            try sources.trimmingCharacters(in: .whitespacesAndNewlines)
-                .appending("\n")
-                .write(to: sharedDir.appendingPathComponent("sources.list"), atomically: true, encoding: .utf8)
-            try script
-                .write(to: sharedDir.appendingPathComponent("fix-apt.sh"), atomically: true, encoding: .utf8)
-        } catch {
-            logger.error("Failed to seed Debian mirror helper files: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-
-
     func startVM(_ vm: VirtualMachine) async throws {
         try await VMLifecycleManager.shared.performOperation(for: vm.id) {
             try await self._startVMInternal(vm)
@@ -602,6 +581,12 @@ public final class VMManager {
                 throw error
             }
         }
+
+        if !EntitlementChecker.hasEntitlement("com.apple.vm.networking"), vm.networkMode == .bridge {
+            vm.addLog("Bridged entitlement unavailable in current signing profile. Using NAT fallback.")
+            vm.networkMode = .nat
+            vm.bridgeInterfaceName = nil
+        }
         
         do {
             if let existing = vm.vzVirtualMachine {
@@ -614,12 +599,14 @@ public final class VMManager {
             
             if !vm.isInstalled {
                 vm.addLog("PHASE 1: INSTALL MODE - Preparing installer...")
+                vm.addLog("Install profile: distro=\(vm.selectedDistro.rawValue), network=\(vm.networkMode.rawValue)")
                 let cacheDir = try VMStorageManager.shared.getISOCacheDirectory()
                 let cachedISOURL = try await ensureCachedInstallerISO(for: vm, cacheDir: cacheDir)
                 let stagedISOURL = vmDir.appendingPathComponent("installer.iso")
                 
                 vm.addLog("Staging ISO to VM storage (clean copy)...")
                 try streamCopy(from: cachedISOURL, to: stagedISOURL)
+                vm.addLog("Installer ISO staged: \(stagedISOURL.lastPathComponent)")
                 
                 vm.needsUserInteraction = true
                 vm.stage = .installing
@@ -628,6 +615,9 @@ public final class VMManager {
             }
 
             let configuration = try await VMConfigurationBuilder.shared.build(for: vm)
+            if !vm.isInstalled {
+                vm.addLog("Boot mode: EFI boot from installer ISO.")
+            }
             
             // Setup Serial Console
             let consoleDevice = VZVirtioConsoleDeviceConfiguration()
@@ -698,9 +688,16 @@ public final class VMManager {
             if let str = String(data: data, encoding: .utf8) {
                 Task { @MainActor in
                     self.terminalConsoleServers[vm.id]?.sendToClient(data)
-                    vm.consoleOutput.append(str)
-                    if vm.consoleOutput.count > 100000 {
-                        vm.consoleOutput = String(vm.consoleOutput.suffix(50000))
+                    let displayChunk: String
+                    if str.count > 8192 {
+                        // Keep UI updates bounded during noisy guest logs (e.g., DNS retry storms).
+                        displayChunk = String(str.suffix(8192))
+                    } else {
+                        displayChunk = str
+                    }
+                    vm.consoleOutput.append(displayChunk)
+                    if vm.consoleOutput.count > 30000 {
+                        vm.consoleOutput = String(vm.consoleOutput.suffix(15000))
                     }
                     self.processConsoleChunk(str, for: vm)
                 }
@@ -710,11 +707,17 @@ public final class VMManager {
     
     private func processConsoleChunk(_ chunk: String, for vm: VirtualMachine) {
         vm.lastConsoleActivity = Date()
+        if vm.selectedDistro == .talos {
+            let lower = chunk.lowercased()
+            if lower.contains("[talos]") || lower.contains("maintenance") || lower.contains("connectivity") {
+                vm.lastHealthyPoll = Date()
+            }
+        }
         
         var buffer = pollBuffers[vm.id, default: ""]
         buffer.append(chunk)
-        if buffer.count > 400000 {
-            buffer = String(buffer.suffix(200000))
+        if buffer.count > 120000 {
+            buffer = String(buffer.suffix(60000))
         }
         
         while let startRange = buffer.range(of: "---POLL_START---"),
@@ -973,16 +976,7 @@ public final class VMManager {
         if !explicit.isEmpty {
             return explicit
         }
-        switch vm.selectedDistro {
-        case .debian13:
-            return "debian:latest"
-        case .alpine:
-            return "alpine:latest"
-        case .ubuntu:
-            return "ubuntu:24.04"
-        case .minimal:
-            return "busybox:latest"
-        }
+        return "alpine:latest"
     }
 
     private func shellSingleQuoted(_ text: String) -> String {
@@ -1086,7 +1080,10 @@ public final class VMManager {
             return
         }
 
-        if vm.networkMode == .bridge, vm.bridgeInterfaceName == nil { return }
+        if vm.networkMode == .bridge, vm.bridgeInterfaceName == nil {
+            vm.bridgeInterfaceName = VMNetworkService.shared.resolveBridgeInterface(preferred: vm.bridgeInterfaceName)
+            if vm.bridgeInterfaceName == nil { return }
+        }
         guard let mac = storedMACAddress(for: vm) else { return }
         guard let ip = detectIPv4Address(forMAC: mac) else { return }
         if ip == vm.ipAddress { return }
@@ -1094,6 +1091,9 @@ public final class VMManager {
         vm.ipAddress = ip
         if vm.networkMode == .nat, ip.hasPrefix("192.168.64.") {
             vm.gateway = "192.168.64.1"
+            vm.connectionType = "NAT (Virtualization.framework)"
+        } else {
+            vm.connectionType = "Bridged (\(vm.bridgeInterfaceName ?? "auto"))"
         }
         vm.isConnected = true
         ensureWireGuardForwarders(for: vm)
@@ -1321,17 +1321,29 @@ public final class VMManager {
     }
 
     private func ensureWireGuardForwarders(for vm: VirtualMachine) {
-        guard vm.networkMode == .nat else { return }
+        guard vm.networkMode == .nat else {
+            if let existing = wgControlForwarders[vm.id] {
+                existing.stop()
+                wgControlForwarders[vm.id] = nil
+            }
+            if let existing = wgDataForwarders[vm.id] {
+                existing.stop()
+                wgDataForwarders[vm.id] = nil
+            }
+            wgForwarderTargetIP[vm.id] = nil
+            return
+        }
+
         let guestIP = vm.ipAddress
         if guestIP == "Detecting..." || guestIP.isEmpty { return }
-        
+
         if let last = wgForwarderTargetIP[vm.id], last != guestIP {
             wgControlForwarders[vm.id]?.stop()
             wgControlForwarders[vm.id] = nil
             wgDataForwarders[vm.id]?.stop()
             wgDataForwarders[vm.id] = nil
         }
-        
+
         if vm.wgControlHostForwardPort > 0, wgControlForwarders[vm.id] == nil {
             do {
                 let fwd = try UDPPortForwarder(listenPort: vm.wgControlHostForwardPort, targetIP: guestIP, targetPort: vm.wgControlListenPort)
@@ -1343,7 +1355,7 @@ public final class VMManager {
                 vm.addLog("Failed to start WG control UDP forwarder: \(error.localizedDescription)", isError: true)
             }
         }
-        
+
         if vm.wgDataHostForwardPort > 0, wgDataForwarders[vm.id] == nil {
             do {
                 let fwd = try UDPPortForwarder(listenPort: vm.wgDataHostForwardPort, targetIP: guestIP, targetPort: vm.wgDataListenPort)
@@ -1383,55 +1395,48 @@ public final class VMManager {
     }
 
     private func ensureCachedInstallerISO(for vm: VirtualMachine, cacheDir: URL) async throws -> URL {
-        let cachedURL = cacheDir.appendingPathComponent(cacheFileName(for: vm.selectedDistro))
+        let cachedURL = cacheDir.appendingPathComponent(cacheFileName())
         
         if FileManager.default.fileExists(atPath: cachedURL.path) {
-            return maybePreseeded(url: cachedURL, vm: vm, cacheDir: cacheDir)
-        }
-        
-        if vm.selectedDistro == .debian13 {
-            guard let local = templateISOURL(for: .debian13) else {
-                throw VMError.configurationInvalid("Please upload Debian ISO.")
-            }
-            try streamCopy(from: local, to: cachedURL)
+            vm.addLog("Using cached installer ISO: \(cachedURL.lastPathComponent)")
             return cachedURL
         }
         
-        guard let mirror = vm.selectedDistro.mirrorURL else {
-            throw VMError.configurationInvalid("No mirror for \(vm.selectedDistro.rawValue)")
+        let mirrors = vm.selectedDistro.mirrorCandidates
+        guard !mirrors.isEmpty else {
+            throw VMError.configurationInvalid("No mirror for \(vm.selectedDistro.rawValue).")
         }
         
         vm.stage = .downloadingISO
-        try await downloadISO(from: mirror, to: cachedURL, vm: vm)
-        return maybePreseeded(url: cachedURL, vm: vm, cacheDir: cacheDir)
-    }
-
-    private func cacheFileName(for distro: VirtualMachine.LinuxDistro) -> String {
-        switch distro {
-        case .debian13: return "debian-13.iso"
-        case .alpine: return "alpine.iso"
-        case .ubuntu: return "ubuntu.iso"
-        case .minimal: return "minimal.iso"
+        vm.addLog("Probing installer mirrors for \(vm.selectedDistro.rawValue)...")
+        let orderedMirrors = await prioritizeReachableMirrors(mirrors, vm: vm)
+        if let first = orderedMirrors.first {
+            vm.addLog("Selected mirror: \(first.absoluteString)")
         }
-    }
-
-    private func preseededCacheFileName(for distro: VirtualMachine.LinuxDistro) -> String {
-        switch distro {
-        case .debian13: return "debian-13-preseed.iso"
-        default: return cacheFileName(for: distro)
+        var lastError: Error?
+        for mirror in orderedMirrors {
+            do {
+                try await downloadISO(from: mirror, to: cachedURL, vm: vm)
+                return cachedURL
+            } catch {
+                lastError = error
+                vm.addLog("ISO download failed from \(mirror.absoluteString): \(error.localizedDescription)", isError: true)
+            }
         }
+        
+        throw VMError.configurationInvalid("Failed to download installer ISO for \(vm.selectedDistro.rawValue). Last error: \(lastError?.localizedDescription ?? "unknown").")
     }
 
-    private func templateISOURL(for distro: VirtualMachine.LinuxDistro) -> URL? {
-        if let authorized = authorizedISOURL { return authorized }
-        return nil
+    private func cacheFileName() -> String {
+        "talos-metal-arm64.iso"
     }
 
     private func downloadISO(from url: URL, to destination: URL, vm: VirtualMachine) async throws {
-        vm.addLog("Downloading ISO...")
+        vm.addLog("Downloading ISO from \(url.absoluteString)...")
         let (tempURL, response) = try await URLSession.shared.download(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw VMError.configurationInvalid("Download failed")
+        if let statusCode = (response as? HTTPURLResponse)?.statusCode,
+           !(200...299).contains(statusCode) {
+            throw VMError.configurationInvalid("Download failed with HTTP \(statusCode)")
         }
         
         // Move downloaded file to destination
@@ -1439,7 +1444,61 @@ public final class VMManager {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: tempURL, to: destination)
-        vm.addLog("ISO download complete.")
+        vm.addLog("ISO download complete from \(url.host() ?? "mirror").")
+    }
+
+    private func prioritizeReachableMirrors(_ mirrors: [URL], vm: VirtualMachine) async -> [URL] {
+        let indexed = Array(mirrors.enumerated())
+        let reachability = await withTaskGroup(of: (Int, URL, Bool).self, returning: [(Int, URL, Bool)].self) { group in
+            for (index, url) in indexed {
+                group.addTask {
+                    let ok = await Self.isMirrorReachable(url)
+                    return (index, url, ok)
+                }
+            }
+            var results: [(Int, URL, Bool)] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+        
+        let reachable = reachability
+            .filter(\.2)
+            .sorted { $0.0 < $1.0 }
+            .map(\.1)
+        if !reachable.isEmpty {
+            vm.addLog("Reachable mirrors: \(reachable.count)/\(mirrors.count)")
+            return reachable
+        }
+        
+        vm.addLog("Mirror probe found no reachable endpoints; attempting original mirror order.", isError: true)
+        return mirrors
+    }
+    
+    private static func isMirrorReachable(_ url: URL) async -> Bool {
+        var headRequest = URLRequest(url: url)
+        headRequest.httpMethod = "HEAD"
+        headRequest.timeoutInterval = 8
+        do {
+            let (_, response) = try await URLSession.shared.data(for: headRequest)
+            if let code = (response as? HTTPURLResponse)?.statusCode, (200...399).contains(code) {
+                return true
+            }
+        } catch {}
+        
+        var rangeRequest = URLRequest(url: url)
+        rangeRequest.httpMethod = "GET"
+        rangeRequest.timeoutInterval = 10
+        rangeRequest.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: rangeRequest)
+            if let code = (response as? HTTPURLResponse)?.statusCode {
+                return code == 206 || (200...399).contains(code)
+            }
+        } catch {}
+        
+        return false
     }
 
     private func streamCopy(from source: URL, to destination: URL) throws {
@@ -1467,73 +1526,6 @@ public final class VMManager {
         }
     }
 
-    private func maybePreseeded(url: URL, vm: VirtualMachine, cacheDir: URL) -> URL {
-        // VZLinuxBootLoader passes the preseed URL natively via the kernel command line.
-        // We do not need to build a preseeded ISO with makehybrid, which can strip boot sectors
-        // and cause the Apple Virtualization Framework to reject the disk image.
-        return url
-    }
-
-    private func buildPreseededISO(from source: URL, to destination: URL, preseedURL: String) throws {
-        let fm = FileManager.default
-        let tempRoot = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let mountPoint = tempRoot.appendingPathComponent("mnt")
-        let workDir = tempRoot.appendingPathComponent("work")
-        try fm.createDirectory(at: mountPoint, withIntermediateDirectories: true)
-        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
-
-        // Mount ISO
-        let attach = Process()
-        attach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        attach.arguments = ["attach", source.path, "-nobrowse", "-readonly", "-mountpoint", mountPoint.path]
-        try attach.run()
-        attach.waitUntilExit()
-
-        defer {
-            let detach = Process()
-            detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-            detach.arguments = ["detach", mountPoint.path, "-force"]
-            try? detach.run()
-            detach.waitUntilExit()
-            try? fm.removeItem(at: tempRoot)
-        }
-
-        // Copy contents
-        let ditto = Process()
-        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        ditto.arguments = [mountPoint.path, workDir.path]
-        try ditto.run()
-        ditto.waitUntilExit()
-
-        // Patch isolinux/grub if present
-        patchBootConfigs(in: workDir, preseedURL: preseedURL)
-
-        // Rebuild ISO (best-effort)
-        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
-        let make = Process()
-        make.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        make.arguments = ["makehybrid", "-iso", "-joliet", "-o", destination.path, workDir.path]
-        try make.run()
-        make.waitUntilExit()
-    }
-
-    private func patchBootConfigs(in dir: URL, preseedURL: String) {
-        let files = [
-            dir.appendingPathComponent("isolinux/txt.cfg"),
-            dir.appendingPathComponent("isolinux/isolinux.cfg"),
-            dir.appendingPathComponent("boot/grub/grub.cfg")
-        ]
-        for file in files where FileManager.default.fileExists(atPath: file.path) {
-            if var text = try? String(contentsOf: file, encoding: .utf8) {
-                if !text.contains("preseed/url") {
-                    text = text.replacingOccurrences(of: "append", with: "append auto priority=critical preseed/url=\(preseedURL) debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us", options: .literal, range: nil)
-                    text = text.replacingOccurrences(of: "linux", with: "linux auto priority=critical preseed/url=\(preseedURL) debian-installer/locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us", options: .literal, range: nil)
-                    try? text.write(to: file, atomically: true, encoding: .utf8)
-                }
-            }
-        }
-    }
-    
     func stopVM(_ vm: VirtualMachine) async throws {
         try await VMLifecycleManager.shared.performOperation(for: vm.id) {
             try await self._stopVMInternal(vm)

@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Darwin
 import os
+import SystemConfiguration
 
 struct HostResources {
     private static let logger = Logger(subsystem: "dimense.net.MLV", category: "HostResources")
@@ -75,7 +76,7 @@ struct HostResources {
     static func getNetworkInterfaces() -> [NetworkInterface] {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
-            return [NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "N/A", bsdName: "nat0", isActive: true)]
+            return []
         }
         defer { freeifaddrs(ifaddr) }
 
@@ -118,9 +119,7 @@ struct HostResources {
             iface.bsdName.hasPrefix("llw")
         }
         interfaces.removeAll { !$0.isActive && $0.type == .unknown }
-        return interfaces.isEmpty
-            ? [NetworkInterface(name: "Virtual NAT", type: .unknown, speed: "N/A", bsdName: "nat0", isActive: true)]
-            : interfaces
+        return interfaces
     }
 
     static func ipAddress(for bsdName: String) -> String? {
@@ -149,9 +148,16 @@ struct HostResources {
         return active.first?.type ?? .unknown
     }
 
-    /// Default NAT host IP for Apple Virtualization NAT (used for preseed URL hints).
-    static var defaultNATHostIP: String { "192.168.64.1" }
-    
+    static func primaryIPv4InterfaceBSDName() -> String? {
+        guard let global = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any] else {
+            return nil
+        }
+        if let primary = global["PrimaryInterface"] as? String, !primary.isEmpty {
+            return primary
+        }
+        return nil
+    }
+
     private static func getIPAddress(for interface: String) -> String? {
         var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?

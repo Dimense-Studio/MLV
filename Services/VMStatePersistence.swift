@@ -62,7 +62,7 @@ struct VMMetadata: Codable {
         } else if let gb = try container.decodeIfPresent(Int.self, forKey: .memorySizeGB) {
             memorySizeMB = gb * 1024
         } else {
-            memorySizeMB = 4096
+            memorySizeMB = 16384
         }
         
         systemDiskSizeGB = try container.decode(Int.self, forKey: .systemDiskSizeGB)

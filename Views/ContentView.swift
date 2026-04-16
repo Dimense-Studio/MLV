@@ -1899,12 +1899,12 @@ struct LegacyVMConfigForm: View {
     @State private var dataDiskGB: Int = 100
     @State private var useDedicatedLonghornDisk: Bool = true
     @State private var isMaster: Bool = false
-    @State private var selectedDistro: VirtualMachine.LinuxDistro = .debian13
+    @State private var selectedDistro: VirtualMachine.LinuxDistro = .talos
     @State private var errorMessage: String? = nil
     @State private var isDeploying: Bool = false
     
     // Added network mode and bridge interface selection states
-    @State private var selectedNetworkMode: VMNetworkMode = .nat
+    @State private var selectedNetworkMode: VMNetworkMode = .bridge
     @State private var selectedBridgeName: String = ""
     @State private var enableSecondaryNetwork: Bool = false
     @State private var secondaryNetworkMode: VMNetworkMode = .nat
@@ -2014,12 +2014,13 @@ struct LegacyVMConfigForm: View {
                 secondaryBridgeName = vm.secondaryBridgeInterfaceName ?? secondaryBridgeName
             } else if vmName.isEmpty {
                 vmName = "node-\(Int.random(in: 100...999))"
+                selectedNetworkMode = .bridge
             }
-            if selectedBridgeName.isEmpty, let first = interfaces.first {
-                selectedBridgeName = first.bsdName
+            if !interfaces.contains(where: { $0.bsdName == selectedBridgeName }) {
+                selectedBridgeName = interfaces.first?.bsdName ?? ""
             }
-            if secondaryBridgeName.isEmpty, let first = interfaces.first {
-                secondaryBridgeName = first.bsdName
+            if !interfaces.contains(where: { $0.bsdName == secondaryBridgeName }) {
+                secondaryBridgeName = interfaces.first?.bsdName ?? ""
             }
         }
         .alert(isEditing ? "Save failed" : "Deploy failed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
@@ -2054,11 +2055,8 @@ struct LegacyVMConfigForm: View {
                         Text("Distribution")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(DashboardPalette.textSecondary)
-                        Picker("Linux", selection: $selectedDistro) {
-                            ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
-                                Text(distro.rawValue).tag(distro)
-                            }
-                        }
+                        Text(VirtualMachine.LinuxDistro.talos.rawValue)
+                            .font(.system(.body, design: .monospaced))
                     }
                 }
 
@@ -2135,6 +2133,10 @@ struct LegacyVMConfigForm: View {
                         .pickerStyle(.segmented)
                         if selectedNetworkMode == .bridge {
                             Picker("Bridge Interface", selection: $selectedBridgeName) {
+                                Text("Select interface").tag("")
+                                if interfaces.isEmpty {
+                                    Text("No interface available").tag("")
+                                }
                                 ForEach(interfaces, id: \.bsdName) { iface in
                                     Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
                                 }
@@ -2150,6 +2152,10 @@ struct LegacyVMConfigForm: View {
                             .pickerStyle(.segmented)
                             if secondaryNetworkMode == .bridge {
                                 Picker("Secondary Bridge", selection: $secondaryBridgeName) {
+                                    Text("Select interface").tag("")
+                                    if interfaces.isEmpty {
+                                        Text("No interface available").tag("")
+                                    }
                                     ForEach(interfaces, id: \.bsdName) { iface in
                                         Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
                                     }
@@ -2222,16 +2228,16 @@ struct LegacyVMConfigForm: View {
                 _ = try await VMManager.shared.createLinuxVM(
                     name: vmName,
                     cpus: cpuCount,
-                    ramGB: memoryGB,
+                    ramMB: memoryGB * 1024,
                     sysDiskGB: systemDiskGB,
                     dataDiskGB: useDedicatedLonghornDisk ? dataDiskGB : 0,
                     isMaster: isMaster,
                     distro: selectedDistro,
                     networkMode: selectedNetworkMode,
-                    bridgeInterfaceName: selectedBridgeName,
+                    bridgeInterfaceName: selectedNetworkMode == .bridge ? selectedBridgeName : nil,
                     secondaryNetworkEnabled: enableSecondaryNetwork,
                     secondaryNetworkMode: secondaryNetworkMode,
-                    secondaryBridgeInterfaceName: secondaryBridgeName
+                    secondaryBridgeInterfaceName: (enableSecondaryNetwork && secondaryNetworkMode == .bridge) ? secondaryBridgeName : nil
                 )
                 
                 isDeploying = false

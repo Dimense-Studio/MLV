@@ -34,7 +34,7 @@ final class WireGuardAndClusterTests: XCTestCase {
             .init(id: "b", name: "B", publicKey: "k2", endpointHost: "2.2.2.2", endpointPort: 7123, addressCIDR: "10.13.10.11/32", cpuCount: 8, memoryGB: 32, freeDiskGB: 150, lastSeen: now)
         ]
         
-        let spec = ClusterManager.VMRequestSpec(name: "x", cpus: 4, ramGB: 8, sysDiskGB: 64, dataDiskGB: 64, isMaster: false, distroRawValue: VirtualMachine.LinuxDistro.debian13.rawValue)
+        let spec = ClusterManager.VMRequestSpec(name: "x", cpus: 4, ramGB: 8, sysDiskGB: 64, dataDiskGB: 64, isMaster: false, distroRawValue: VirtualMachine.LinuxDistro.talos.rawValue)
         let best = cm.bestNode(for: spec)
         XCTAssertEqual(best?.id, "a")
     }

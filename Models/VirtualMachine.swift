@@ -32,6 +32,8 @@ enum VMStage: String, Codable, Equatable {
 enum VMNetworkMode: String, Codable, CaseIterable {
     case nat = "NAT"
     case bridge = "Bridge"
+
+    static var allCases: [VMNetworkMode] { [.nat, .bridge] }
 }
 
 enum VMClusterRole: String, Codable, CaseIterable {
@@ -89,7 +91,7 @@ class VirtualMachine: Identifiable {
         }
     }
     
-    var networkMode: VMNetworkMode = .nat {
+    var networkMode: VMNetworkMode = .bridge {
         didSet { persist() }
     }
     
@@ -110,11 +112,6 @@ class VirtualMachine: Identifiable {
     }
 
     var clusterRole: VMClusterRole = .node {
-        didSet { persist() }
-    }
-
-    /// When true, VM install should use preseed-based zero-touch flow (Debian only).
-    var zeroTouchInstall: Bool = false {
         didSet { persist() }
     }
 
@@ -275,7 +272,7 @@ class VirtualMachine: Identifiable {
     var ipAddress: String = "Detecting..."
     var gateway: String = "192.168.64.1"
     var dns: [String] = ["8.8.8.8", "1.1.1.1"]
-    var connectionType: String = "NAT (Virtualization.framework)"
+    var connectionType: String = "Bridged (Virtualization.framework)"
     var isConnected: Bool = false
     
     func addLog(_ message: String, isError: Bool = false) {
@@ -289,57 +286,41 @@ class VirtualMachine: Identifiable {
     }
     
     // Configurable Hardware
-    var cpuCount: Int = 4
-    var memorySizeMB: Int = 4096
+    var cpuCount: Int = 8
+    var memorySizeMB: Int = 16384
     var systemDiskSizeGB: Int = 64
     var dataDiskSizeGB: Int = 100
     var isMaster: Bool = false
     
-    var systemDiskProfile: DiskProfile = .balanced {
+    var systemDiskProfile: DiskProfile = .maxPerformance {
         didSet { persist() }
     }
     
-    var dataDiskProfile: DiskProfile = .durable {
+    var dataDiskProfile: DiskProfile = .maxPerformance {
         didSet { persist() }
     }
     
     enum LinuxDistro: String, CaseIterable, Identifiable, Codable {
-        case debian13 = "Debian 13 (Trixie)"
-        case alpine = "Alpine Linux (Edge)"
-        case ubuntu = "Ubuntu Server (24.04)"
-        case minimal = "Minimal K3s OS"
-        
+        case talos = "Talos Linux (ARM64 ISO)"
+
         var id: String { self.rawValue }
-        
-        var icon: String {
-            switch self {
-            case .debian13: return "debian"
-            case .alpine: return "mount"
-            case .ubuntu: return "ubuntu"
-            case .minimal: return "sparkles"
-            }
-        }
-        
+
+        var icon: String { "shippingbox" }
+
         var mirrorURL: URL? {
-            switch self {
-            case .debian13: return URL(string: "https://cdimage.debian.org/cdimage/daily-builds/daily/arch-latest/arm64/iso-cd/debian-testing-arm64-netinst.iso")
-            case .alpine: return URL(string: "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-virt-3.20.0-aarch64.iso")
-            case .ubuntu: return URL(string: "https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.4-live-server-arm64.iso")
-            case .minimal: return URL(string: "https://github.com/rancher/k3os/releases/download/v0.11.1/k3os-arm64.iso")
-            }
+            mirrorCandidates.first
         }
 
-        var shortLabel: String {
-            switch self {
-            case .debian13: return "Debian"
-            case .alpine: return "Alpine"
-            case .ubuntu: return "Ubuntu"
-            case .minimal: return "Minimal"
-            }
+        var mirrorCandidates: [URL] {
+            [
+                URL(string: "https://factory.talos.dev/image/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba/v1.12.6/metal-arm64.iso")
+            ].compactMap { $0 }
         }
+
+        var shortLabel: String { "Talos" }
     }
     
-    var selectedDistro: LinuxDistro = .debian13
+    var selectedDistro: LinuxDistro = .talos
     
     var vmDirectory: URL? {
         return VMStorageManager.shared.getVMRootDirectory(for: id)
@@ -381,7 +362,7 @@ class VirtualMachine: Identifiable {
         lastMonitoredProcessTicks = nil
     }
     
-    init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 4, ramMB: Int = 4096, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
+    init(id: UUID = UUID(), name: String, isoURL: URL, cpus: Int = 8, ramMB: Int = 16384, sysDiskGB: Int = 64, dataDiskGB: Int = 100) {
         self.id = id
         self.name = name
         self.isoURL = isoURL

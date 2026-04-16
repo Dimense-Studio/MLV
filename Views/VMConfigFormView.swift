@@ -36,17 +36,17 @@ struct VMConfigForm: View {
     var presentationStyle: PresentationStyle = .sheet
 
     @State private var vmName: String = ""
-    @State private var cpuCount: Int = 1
-    @State private var memoryMB: Int = 512
-    @State private var systemDiskGB: Int = 40
-    @State private var dataDiskGB: Int = 100
-    @State private var useDedicatedLonghornDisk: Bool = true
+    @State private var cpuCount: Int = 8
+    @State private var memoryMB: Int = 16384
+    @State private var systemDiskGB: Int = 5
+    @State private var dataDiskGB: Int = 5
+    @State private var useDedicatedLonghornDisk: Bool = false
     @State private var isMaster: Bool = false
-    @State private var selectedDistro: VirtualMachine.LinuxDistro = .debian13
+    @State private var selectedDistro: VirtualMachine.LinuxDistro = .talos
     @State private var errorMessage: String? = nil
     @State private var isDeploying: Bool = false
 
-    @State private var selectedNetworkMode: VMNetworkMode = .nat
+    @State private var selectedNetworkMode: VMNetworkMode = .bridge
     @State private var selectedBridgeName: String = ""
     @State private var enableSecondaryNetwork: Bool = false
     @State private var secondaryNetworkMode: VMNetworkMode = .nat
@@ -60,7 +60,6 @@ struct VMConfigForm: View {
     @State private var containerMounts: [VirtualMachine.ContainerMount] = []
     @State private var containerPorts: [VirtualMachine.ContainerPort] = []
     @State private var pendingMountSelection: UUID?
-    @State private var zeroTouchEnabled: Bool = false
 
 
     private let maxCores = max(1, HostResources.cpuCount - 2)
@@ -219,27 +218,19 @@ struct VMConfigForm: View {
                 containerPorts = vm.containerPorts
             } else if vmName.isEmpty {
                 vmName = isContainerMode ? "container-\(Int.random(in: 100...999))" : "node-\(Int.random(in: 100...999))"
-                if !interfaces.isEmpty {
-                    selectedNetworkMode = .bridge
-                }
-                
-                // Smart defaults based on available power
-                let availCPU = VMManager.shared.availableCPU
-                let availRAM = VMManager.shared.availableMemoryMB
-                
-                if isContainerMode {
-                    cpuCount = max(1, min(2, availCPU))
-                    memoryMB = max(256, min(2048, availRAM / 4))
-                } else {
-                    cpuCount = max(1, min(4, availCPU / 2))
-                    memoryMB = max(1024, min(8192, availRAM / 2))
-                }
+                selectedDistro = .talos
+                selectedNetworkMode = .bridge
+                cpuCount = recommendedCPU
+                memoryMB = recommendedRAMMB
+                systemDiskGB = 5
+                dataDiskGB = 5
+                useDedicatedLonghornDisk = false
             }
-            if selectedBridgeName.isEmpty, let first = interfaces.first {
-                selectedBridgeName = first.bsdName
+            if !interfaces.contains(where: { $0.bsdName == selectedBridgeName }) {
+                selectedBridgeName = interfaces.first?.bsdName ?? ""
             }
-            if secondaryBridgeName.isEmpty, let first = interfaces.first {
-                secondaryBridgeName = first.bsdName
+            if !interfaces.contains(where: { $0.bsdName == secondaryBridgeName }) {
+                secondaryBridgeName = interfaces.first?.bsdName ?? ""
             }
             if isContainerMode {
                 Task { @MainActor in
@@ -288,14 +279,9 @@ struct VMConfigForm: View {
                             Text("Distribution")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(DashboardPalette.textSecondary)
-                            Picker("Linux", selection: $selectedDistro) {
-                                ForEach(VirtualMachine.LinuxDistro.allCases) { distro in
-                                    Text(distro.rawValue).tag(distro)
-                                }
-                            }
-                            if selectedDistro == .debian13 {
-                                Toggle("Zero-touch install (preseed)", isOn: $zeroTouchEnabled)
-                            }
+                            Text(VirtualMachine.LinuxDistro.talos.rawValue)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.primary)
                         }
                     }
                 }
@@ -534,6 +520,10 @@ struct VMConfigForm: View {
                             .pickerStyle(.segmented)
                             if selectedNetworkMode == .bridge {
                                 Picker("Bridge Interface", selection: $selectedBridgeName) {
+                                    Text("Select interface").tag("")
+                                    if interfaces.isEmpty {
+                                        Text("No interface available").tag("")
+                                    }
                                     ForEach(interfaces, id: \.bsdName) { iface in
                                         Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
                                     }
@@ -549,6 +539,10 @@ struct VMConfigForm: View {
                                 .pickerStyle(.segmented)
                                 if secondaryNetworkMode == .bridge {
                                     Picker("Secondary Bridge", selection: $secondaryBridgeName) {
+                                        Text("Select interface").tag("")
+                                        if interfaces.isEmpty {
+                                            Text("No interface available").tag("")
+                                        }
                                         ForEach(interfaces, id: \.bsdName) { iface in
                                             Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
                                         }
@@ -781,11 +775,10 @@ struct VMConfigForm: View {
                     containerMounts: containerMounts,
                     containerPorts: containerPorts,
                     networkMode: isContainerMode ? .nat : selectedNetworkMode,
-                    bridgeInterfaceName: isContainerMode ? nil : selectedBridgeName,
+                    bridgeInterfaceName: (isContainerMode || selectedNetworkMode != .bridge) ? nil : selectedBridgeName,
                     secondaryNetworkEnabled: isContainerMode ? false : enableSecondaryNetwork,
                     secondaryNetworkMode: isContainerMode ? .nat : secondaryNetworkMode,
-                    secondaryBridgeInterfaceName: isContainerMode ? nil : secondaryBridgeName,
-                    zeroTouch: selectedDistro == .debian13 ? zeroTouchEnabled : false
+                    secondaryBridgeInterfaceName: (isContainerMode || !enableSecondaryNetwork || secondaryNetworkMode != .bridge) ? nil : secondaryBridgeName
                 )
 
                 isDeploying = false

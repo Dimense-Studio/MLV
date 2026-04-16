@@ -88,6 +88,10 @@ final class ClusterManager {
         let wgAddress: String
         let hostEndpoint: String
         let hostPort: Int
+        let primaryAddress: String?
+        let isMaster: Bool
+        let networkInterface: String?
+        let networkSubnetPrefix: String?
     }
     
     private let rpcPort: NWEndpoint.Port = 7124
@@ -155,7 +159,11 @@ final class ClusterManager {
                 publicKey: pub,
                 wgAddress: addr,
                 hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
-                hostPort: vm.wgControlHostForwardPort
+                hostPort: vm.wgControlHostForwardPort,
+                primaryAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
+                isMaster: vm.isMaster,
+                networkInterface: vm.bridgeInterfaceName,
+                networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress)
             ))
         }
         
@@ -326,7 +334,11 @@ final class ClusterManager {
                         publicKey: pub,
                         wgAddress: addr,
                         hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
-                        hostPort: vm.wgControlHostForwardPort
+                        hostPort: vm.wgControlHostForwardPort,
+                        primaryAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
+                        isMaster: vm.isMaster,
+                        networkInterface: vm.bridgeInterfaceName,
+                        networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress)
                     )
                 }
                 let payload = try JSONEncoder().encode(vms)
@@ -346,7 +358,7 @@ final class ClusterManager {
             case "createVM":
                 guard let p = req.payload else { throw NSError(domain: "ClusterRPC", code: 3, userInfo: [NSLocalizedDescriptionKey: "Missing payload"]) }
                 let spec = try JSONDecoder().decode(VMRequestSpec.self, from: p)
-                let distro = VirtualMachine.LinuxDistro(rawValue: spec.distroRawValue) ?? .debian13
+                let distro = VirtualMachine.LinuxDistro(rawValue: spec.distroRawValue) ?? .talos
                 let vm = try await VMManager.shared.createLinuxVM(
                     name: spec.name,
                     cpus: spec.cpus,
