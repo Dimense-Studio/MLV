@@ -49,6 +49,8 @@
 		300405B22F80000000E27D05 /* VisualEffectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405B32F80000000E27D05 /* VisualEffectView.swift */; };
 		300405B42F80000000E27D05 /* VMLifecycleManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405B52F80000000E27D05 /* VMLifecycleManager.swift */; };
 		300405B62F80000000E27D05 /* VMProvisioningService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300405B72F80000000E27D05 /* VMProvisioningService.swift */; };
+		302DCF702F915093006623A4 /* TalosSetupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302DCF6F2F915093006623A4 /* TalosSetupService.swift */; };
+		302DCF722F9150C7006623A4 /* TalosSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302DCF712F9150C7006623A4 /* TalosSetupView.swift */; };
 		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -113,6 +115,8 @@
 		300405B32F80000000E27D05 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		300405B52F80000000E27D05 /* VMLifecycleManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMLifecycleManager.swift; sourceTree = "<group>"; };
 		300405B72F80000000E27D05 /* VMProvisioningService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMProvisioningService.swift; sourceTree = "<group>"; };
+		302DCF6F2F915093006623A4 /* TalosSetupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalosSetupService.swift; sourceTree = "<group>"; };
+		302DCF712F9150C7006623A4 /* TalosSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalosSetupView.swift; sourceTree = "<group>"; };
 		30A9315B2F8131E1002512AD /* VMManaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManaging.swift; sourceTree = "<group>"; };
 		30A9315C2F8131E1002512AD /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		30D4DAA22F7578F9003C3565 /* MLV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLV.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -167,6 +171,7 @@
 				300405572F7F2B4800E27D05 /* DarkGlassBackground.swift */,
 				300405602F7F2B4800E27D05 /* SymbolImage.swift */,
 				300405A72F80002A00E27D05 /* OverlayTheme.swift */,
+				302DCF712F9150C7006623A4 /* TalosSetupView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -201,6 +206,7 @@
 				300405B72F80000000E27D05 /* VMProvisioningService.swift */,
 				300405B12F80000000E27D05 /* VMNetworkService.swift */,
 				300405A42F7FE25500E27D05 /* AppUpdateManager.swift */,
+				302DCF6F2F915093006623A4 /* TalosSetupService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -438,11 +444,13 @@
 				300405702F7F2B4800E27D05 /* ClusterManager.swift in Sources */,
 				300405712F7F2B4800E27D05 /* ContentView.swift in Sources */,
 				300405722F7F2B4800E27D05 /* DarkGlassBackground.swift in Sources */,
+				302DCF722F9150C7006623A4 /* TalosSetupView.swift in Sources */,
 				3004058C2F7FC14B00E27D05 /* VMConfigFormView.swift in Sources */,
 				300405732F7F2B4800E27D05 /* DiscoveryManager.swift in Sources */,
 				3004059B2F7FD43400E27D05 /* EnvironmentConfig.swift in Sources */,
 				3004059C2F7FD43400E27D05 /* AppLogger.swift in Sources */,
 				300405742F7F2B4800E27D05 /* EntitlementChecker.swift in Sources */,
+				302DCF702F915093006623A4 /* TalosSetupService.swift in Sources */,
 				300405A22F7FD45300E27D05 /* VMManaging.swift in Sources */,
 				300405A32F7FD45300E27D05 /* VMListViewModel.swift in Sources */,
 				300405752F7F2B4800E27D05 /* HostResources.swift in Sources */,

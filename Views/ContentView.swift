@@ -91,6 +91,7 @@ struct ContentView: View {
         case storage = "Distributed Storage"
         case network = "Network Topology"
         case images = "Images"
+        case talosSetup = "Talos Setup"
         
         var icon: String {
             switch self {
@@ -99,11 +100,10 @@ struct ContentView: View {
             case .storage: return "externaldrive.connected.to.line.below"
             case .network: return "network"
             case .images: return "square.stack.3d.up"
+            case .talosSetup: return "server.rack"
             }
         }
     }
-    
-    @State private var showingISOImporter = false
     
     var body: some View {
         NavigationStack {
@@ -126,6 +126,9 @@ struct ContentView: View {
                     case .images:
                         ImagesRepositoryView(search: searchText)
                             .navigationTitle("Container Images")
+                    case .talosSetup:
+                        TalosSetupView(search: searchText)
+                            .navigationTitle("Talos Setup")
                     }
                 }
                 .padding(.leading, 64)
@@ -133,9 +136,7 @@ struct ContentView: View {
 
                 OverlaySidebar(
                     selectedTab: $selectedTab,
-                    isContainerMode: isContainerMode,
-                    isISOAuthorized: VMManager.shared.authorizedISOURL != nil,
-                    onAuthorizeISO: { showingISOImporter = true }
+                    isContainerMode: isContainerMode
                 )
                 .padding(.top, 27)
                 .padding(.leading, 10)
@@ -156,23 +157,6 @@ struct ContentView: View {
                     }
                     .help("Switch Runtime")
                 }
-            }
-        }
-        .fileImporter(
-            isPresented: $showingISOImporter,
-            allowedContentTypes: [.iso],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    let didStartAccess = url.startAccessingSecurityScopedResource()
-                    defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
-                    VMManager.shared.authorizedISOURL = url
-                }
-            case .failure(let error):
-                errorMessage = "Failed to authorize ISO: \(error.localizedDescription)"
-                showingError = true
             }
         }
         .alert("Error", isPresented: $showingError, presenting: errorMessage) { _ in
@@ -260,6 +244,12 @@ struct ContentView: View {
         case .images:
             guard isContainerMode else { return false }
             return query.localizedCaseInsensitiveContains("image") || query.localizedCaseInsensitiveContains("container")
+        case .talosSetup:
+            return query.localizedCaseInsensitiveContains("talos") ||
+                query.localizedCaseInsensitiveContains("setup") ||
+                query.localizedCaseInsensitiveContains("talosctl") ||
+                query.localizedCaseInsensitiveContains("controlplane") ||
+                query.localizedCaseInsensitiveContains("worker")
         }
     }
 }
@@ -267,14 +257,12 @@ struct ContentView: View {
 private struct OverlaySidebar: View {
     @Binding var selectedTab: ContentView.ClusterTab
     let isContainerMode: Bool
-    let isISOAuthorized: Bool
-    let onAuthorizeISO: () -> Void
     
     private var visibleTabs: [ContentView.ClusterTab] {
         if isContainerMode {
-            return [.vms, .pods, .storage, .network, .images]
+            return [.vms, .pods, .storage, .network, .images, .talosSetup]
         }
-        return [.vms, .pods, .storage, .network]
+        return [.vms, .pods, .storage, .network, .talosSetup]
     }
 
     var body: some View {
@@ -308,25 +296,6 @@ private struct OverlaySidebar: View {
                     .buttonStyle(.plain)
                     .help(tab == .vms ? (isContainerMode ? "Containers" : "Virtual Machines") : tab.rawValue)
                 }
-            }
-
-            if !isContainerMode {
-                Button(action: onAuthorizeISO) {
-                    Image(systemName: isISOAuthorized ? "checkmark.shield.fill" : "lock.shield")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isISOAuthorized ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(OverlayTheme.panel)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(OverlayTheme.border.opacity(isISOAuthorized ? 1.0 : 0.75), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help(isISOAuthorized ? "ISO Authorized" : "Authorize Cluster ISO")
             }
         }
         .padding(.vertical, 10)
