@@ -20,6 +20,13 @@ final class ClusterManager {
         let lastSeen: Date
     }
     
+    struct WorkerConfigPayload: Codable {
+        let clusterName: String
+        let controlPlaneIP: String
+        let workerYAML: String
+        let talosconfigYAML: String
+    }
+
     struct VMRequestSpec: Codable, Hashable {
         let name: String
         let cpus: Int
@@ -241,6 +248,22 @@ final class ClusterManager {
         return try JSONDecoder().decode([VMInfo].self, from: data)
     }
 
+    func sendWorkerConfig(_ config: WorkerConfigPayload, to node: Node) async throws {
+        let payload = try JSONEncoder().encode(config)
+        let req = RPCRequest(id: UUID().uuidString, type: "provideWorkerConfig", payload: payload)
+        let resp = try await send(req, to: node)
+        if !resp.ok {
+            throw NSError(domain: "ClusterRPC", code: 9, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Failed to send worker config"])
+        }
+    }
+
+    func fetchWorkerConfig(from node: Node) async throws -> WorkerConfigPayload? {
+        let req = RPCRequest(id: UUID().uuidString, type: "getWorkerConfig", payload: nil)
+        let resp = try await send(req, to: node)
+        guard resp.ok, let data = resp.payload else { return nil }
+        return try JSONDecoder().decode(WorkerConfigPayload.self, from: data)
+    }
+
     func runBandwidthTest(to peer: WireGuardManager.Peer, senderName: String) async throws -> BandwidthTestResult {
         let node = Node(
             id: peer.id,
@@ -370,6 +393,20 @@ final class ClusterManager {
                 )
                 let payload = try JSONEncoder().encode(vm.id)
                 return RPCResponse(id: req.id, ok: true, payload: payload, errorMessage: nil)
+            case "provideWorkerConfig":
+                guard let p = req.payload else { throw NSError(domain: "ClusterRPC", code: 8, userInfo: [NSLocalizedDescriptionKey: "Missing payload"]) }
+                let config = try JSONDecoder().decode(WorkerConfigPayload.self, from: p)
+                await TalosAutoSetupService.shared.receiveWorkerConfig(config)
+                return RPCResponse(id: req.id, ok: true, payload: nil, errorMessage: nil)
+
+            case "getWorkerConfig":
+                if let config = await TalosAutoSetupService.shared.availableWorkerConfig() {
+                    let payload = try JSONEncoder().encode(config)
+                    return RPCResponse(id: req.id, ok: true, payload: payload, errorMessage: nil)
+                } else {
+                    return RPCResponse(id: req.id, ok: false, payload: nil, errorMessage: "No worker config available yet")
+                }
+
             case "bandwidthTest":
                 guard let bytes = req.payload else {
                     throw NSError(domain: "ClusterRPC", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing test payload"])

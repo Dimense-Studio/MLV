@@ -39,6 +39,9 @@ struct VMMetadata: Codable {
     let containerMounts: [VirtualMachine.ContainerMount]?
     let containerPorts: [VirtualMachine.ContainerPort]?
     let isContainerWorkload: Bool?
+    let talosSetupCompleted: Bool?
+    let clusterCoreDeployed: Bool?
+    let clusterCoreDashboardPassword: String?
     
     enum CodingKeys: String, CodingKey {
         case id, name, cpuCount, memorySizeMB, memorySizeGB, systemDiskSizeGB, dataDiskSizeGB
@@ -49,6 +52,7 @@ struct VMMetadata: Codable {
         case wgDataPublicKeyBase64, wgDataAddressCIDR, wgDataListenPort, wgDataHostForwardPort
         case autoStartOnLaunch, terminalConsoleHostPort, monitoredProcessPID, monitoredProcessName, hostServicePID
         case containerImageReference, containerMounts, containerPorts, isContainerWorkload
+        case talosSetupCompleted, clusterCoreDeployed, clusterCoreDashboardPassword
     }
     
     init(from decoder: Decoder) throws {
@@ -98,6 +102,9 @@ struct VMMetadata: Codable {
         containerMounts = try container.decodeIfPresent([VirtualMachine.ContainerMount].self, forKey: .containerMounts)
         containerPorts = try container.decodeIfPresent([VirtualMachine.ContainerPort].self, forKey: .containerPorts)
         isContainerWorkload = try container.decodeIfPresent(Bool.self, forKey: .isContainerWorkload)
+        talosSetupCompleted = try container.decodeIfPresent(Bool.self, forKey: .talosSetupCompleted)
+        clusterCoreDeployed = try container.decodeIfPresent(Bool.self, forKey: .clusterCoreDeployed)
+        clusterCoreDashboardPassword = try container.decodeIfPresent(String.self, forKey: .clusterCoreDashboardPassword)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -139,7 +146,9 @@ struct VMMetadata: Codable {
         try container.encodeIfPresent(containerMounts, forKey: .containerMounts)
         try container.encodeIfPresent(containerPorts, forKey: .containerPorts)
         try container.encodeIfPresent(isContainerWorkload, forKey: .isContainerWorkload)
-        try container.encodeIfPresent(isContainerWorkload, forKey: .isContainerWorkload)
+        try container.encodeIfPresent(talosSetupCompleted, forKey: .talosSetupCompleted)
+        try container.encodeIfPresent(clusterCoreDeployed, forKey: .clusterCoreDeployed)
+        try container.encodeIfPresent(clusterCoreDashboardPassword, forKey: .clusterCoreDashboardPassword)
     }
     
     init(
@@ -179,7 +188,10 @@ struct VMMetadata: Codable {
         containerImageReference: String?,
         containerMounts: [VirtualMachine.ContainerMount]?,
         containerPorts: [VirtualMachine.ContainerPort]?,
-        isContainerWorkload: Bool?
+        isContainerWorkload: Bool?,
+        talosSetupCompleted: Bool? = nil,
+        clusterCoreDeployed: Bool? = nil,
+        clusterCoreDashboardPassword: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -218,6 +230,9 @@ struct VMMetadata: Codable {
         self.containerMounts = containerMounts
         self.containerPorts = containerPorts
         self.isContainerWorkload = isContainerWorkload
+        self.talosSetupCompleted = talosSetupCompleted
+        self.clusterCoreDeployed = clusterCoreDeployed
+        self.clusterCoreDashboardPassword = clusterCoreDashboardPassword
     }
 }
 
@@ -278,7 +293,10 @@ class VMStatePersistence {
                     containerImageReference: vm.containerImageReference,
                     containerMounts: vm.containerMounts,
                     containerPorts: vm.containerPorts,
-                    isContainerWorkload: vm.isContainerWorkload
+                    isContainerWorkload: vm.isContainerWorkload,
+                    talosSetupCompleted: vm.talosSetupCompleted,
+                    clusterCoreDeployed: vm.clusterCoreDeployed,
+                    clusterCoreDashboardPassword: vm.clusterCoreDashboardPassword.isEmpty ? nil : vm.clusterCoreDashboardPassword
                 )
             }
             do {

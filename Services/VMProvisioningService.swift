@@ -9,8 +9,13 @@ final class VMProvisioningService {
     func provisionIfNeeded(_ vm: VirtualMachine) {
         guard vm.state == .running, vm.isInstalled else { return }
         
-        // Talos is an immutable OS and does not support the shell-based provisioning flow below.
+        // Talos is an immutable OS - use Talos-specific provisioning
         if vm.selectedDistro == .talos {
+            if !vm.talosClusterConfigured {
+                provisionTalosCluster(vm)
+            } else if !vm.longhornDiskConfigured {
+                provisionTalosNode(vm, role: vm.isMaster ? "master" : "node")
+            }
             return
         }
 
@@ -27,6 +32,79 @@ final class VMProvisioningService {
         }
 
         provisionNetworkHealthChecks(vm)
+    }
+
+    private func provisionTalosCluster(_ vm: VirtualMachine) {
+        vm.addLog("Detecting Talos cluster configuration...")
+
+        let script = """
+        set -euo pipefail
+
+        echo "=== Disk Detection ==="
+        lsblk -o NAME,SIZE,TYPE,MOUNTPOINT
+
+        # /dev/vda is SYSTEM disk - DO NOT USE
+        # /dev/vdb is DATA disk (if present)
+        if [ ! -b /dev/vdb ]; then
+            echo "No extra data disk (/dev/vdb) found - Longhorn storage NOT available"
+            echo "Only /dev/vda (system) is available - DO NOT use for storage"
+            exit 0
+        fi
+
+        echo "=== Data disk detected: /dev/vdb ==="
+        echo "This disk will be used for /data/longhorn (Longhorn storage)"
+        echo "TALOS_EXTRA_DISK_FOUND"
+        """
+
+        executeCommand(vm, script)
+    }
+
+    private func provisionTalosNode(_ vm: VirtualMachine, role: String) {
+        let script = """
+        set -euo pipefail
+
+        # IMPORTANT: Only touch /dev/vdb (data disk) - NEVER touch /dev/vda (system disk)!
+        if [ ! -b /dev/vdb ]; then
+            echo "No data disk (/dev/vdb) - cannot set up Longhorn storage"
+            exit 0
+        fi
+
+        # Check if already configured
+        if mountpoint -q /data/longhorn 2>/dev/null; then
+            echo "Longhorn disk already mounted at /data/longhorn"
+            echo "TALOS_LONGHORN_DISK_READY"
+            exit 0
+        fi
+
+        echo "=== Setting up data disk /dev/vdb for Longhorn ==="
+
+        # Wipe any existing filesystem signature (CAREFUL: only /dev/vdb!)
+        wipefs -a /dev/vdb 2>/dev/null || true
+
+        # Format as ext4
+        mkfs.ext4 -F /dev/vdb
+
+        # Get UUID
+        UUID=$(blkid -s UUID -o value /dev/vdb)
+        echo "Formatted /dev/vdb with UUID: $UUID"
+
+        # Create mount point
+        mkdir -p /data/longhorn
+
+        # Add to fstab (CAREFUL: only /dev/vdb!)
+        if ! grep -q "UUID=$UUID" /etc/fstab; then
+            echo "UUID=$UUID /data/longhorn ext4 defaults,nofail 0 2" >> /etc/fstab
+        fi
+
+        # Mount
+        mount /data/longhorn
+
+        echo "=== Longhorn storage ready at /data/longhorn ==="
+        echo "TALOS_LONGHORN_DISK_READY"
+        """
+
+        vm.addLog("Setting up Talos Longhorn storage on /dev/vdb...")
+        executeCommand(vm, script)
     }
 
     private func provisionK3s(_ vm: VirtualMachine) {
@@ -351,6 +429,10 @@ extension VirtualMachine {
     }
 
     var longhornDiskConfigured: Bool {
-        self.consoleOutput.contains("LONGHORN_DISK_READY")
+        self.consoleOutput.contains("LONGHORN_DISK_READY") || self.consoleOutput.contains("TALOS_LONGHORN_DISK_READY")
+    }
+
+    var talosClusterConfigured: Bool {
+        self.consoleOutput.contains("TALOS_EXTRA_DISK_READY")
     }
 }

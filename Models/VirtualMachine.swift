@@ -291,7 +291,19 @@ class VirtualMachine: Identifiable {
     var systemDiskSizeGB: Int = 64
     var dataDiskSizeGB: Int = 100
     var isMaster: Bool = false
-    
+
+    var talosSetupCompleted: Bool = false {
+        didSet { persist() }
+    }
+
+    var clusterCoreDeployed: Bool = false {
+        didSet { persist() }
+    }
+
+    var clusterCoreDashboardPassword: String = "" {
+        didSet { persist() }
+    }
+
     var systemDiskProfile: DiskProfile = .maxPerformance {
         didSet { persist() }
     }

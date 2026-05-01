@@ -92,7 +92,7 @@ struct ContentView: View {
         case network = "Network Topology"
         case images = "Images"
         case talosSetup = "Talos Setup"
-        
+
         var icon: String {
             switch self {
             case .vms: return "macwindow"
@@ -100,7 +100,7 @@ struct ContentView: View {
             case .storage: return "externaldrive.connected.to.line.below"
             case .network: return "network"
             case .images: return "square.stack.3d.up"
-            case .talosSetup: return "server.rack"
+            case .talosSetup: return "gear.badge.checkmark"
             }
         }
     }
@@ -247,9 +247,8 @@ struct ContentView: View {
         case .talosSetup:
             return query.localizedCaseInsensitiveContains("talos") ||
                 query.localizedCaseInsensitiveContains("setup") ||
-                query.localizedCaseInsensitiveContains("talosctl") ||
-                query.localizedCaseInsensitiveContains("controlplane") ||
-                query.localizedCaseInsensitiveContains("worker")
+                query.localizedCaseInsensitiveContains("config") ||
+                query.localizedCaseInsensitiveContains("auto")
         }
     }
 }
@@ -587,6 +586,11 @@ struct VMRowCompact: View {
             Button {
                 VMManager.shared.openVMFolder(vm)
             } label: { Label("Open Files", systemImage: "folder") }
+            if vm.selectedDistro == .talos && vm.state.isRunning {
+                Button {
+                    TalosAutoSetupService.shared.checkForTalosUpdate(for: vm)
+                } label: { Label("Check for Talos Update", systemImage: "arrow.up.circle") }
+            }
             Divider()
             Toggle(isOn: Binding(get: { vm.autoStartOnLaunch }, set: { vm.autoStartOnLaunch = $0 })) {
                 Label("Autostart", systemImage: "bolt")
@@ -910,7 +914,7 @@ struct PodsListView: View {
                                             .font(.system(size: 11, weight: .semibold))
                                             .foregroundStyle(.secondary)
                                         ForEach(visiblePods) { pod in
-                                            PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace)
+                                            PodRow(name: pod.name, status: pod.status, cpu: pod.cpu, ram: pod.ram, namespace: pod.namespace, vm: vm)
                                         }
                                     }
 
@@ -955,13 +959,28 @@ struct PodRow: View {
     let cpu: String
     let ram: String
     let namespace: String
-    
+    let vm: VirtualMachine
+
+    @State private var showLogs = false
+    @State private var logContent = ""
+    @State private var isLoadingLogs = false
+    @State private var actionMessage: String? = nil
+
+    private var statusColor: Color {
+        switch status {
+        case "Running": return .green
+        case "Pending": return .yellow
+        case "Succeeded": return .blue
+        default: return .red
+        }
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(status == "Running" ? Color.green : (status == "Pending" ? Color.yellow : Color.red))
+                .fill(statusColor)
                 .frame(width: 6, height: 6)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .font(.system(.body, design: .monospaced))
@@ -970,26 +989,64 @@ struct PodRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let msg = actionMessage {
+                    Text(msg)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                }
             }
-            
+
             Spacer()
-            
+
             Text("\(cpu) • \(ram)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-            
+
             Menu {
-                Section("Management") {
-                    Button { } label: { Label("Restart", systemImage: "arrow.clockwise") }
-                    Button { } label: { Label("View Logs", systemImage: "doc.text") }
-                    Button { } label: { Label("Shell", systemImage: "terminal") }
+                Section("Actions") {
+                    Button {
+                        Task {
+                            actionMessage = "Restarting…"
+                            let out = await TalosPodMonitor.shared.restartPod(name: name, namespace: namespace, for: vm)
+                            actionMessage = out
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { actionMessage = nil }
+                        }
+                    } label: { Label("Restart", systemImage: "arrow.clockwise") }
+
+                    Button {
+                        actionMessage = "Loading logs…"
+                        isLoadingLogs = true
+                        Task {
+                            logContent = await TalosPodMonitor.shared.fetchPodLogs(name: name, namespace: namespace, for: vm)
+                            isLoadingLogs = false
+                            actionMessage = nil
+                            showLogs = true
+                        }
+                    } label: { Label("View Logs", systemImage: "doc.text") }
+
+                    Button {
+                        TalosPodMonitor.shared.execShell(name: name, namespace: namespace, for: vm)
+                    } label: { Label("Open Shell", systemImage: "terminal") }
                 }
                 Section {
-                    Button(role: .destructive) { } label: { Label("Terminate", systemImage: "trash") }
+                    Button(role: .destructive) {
+                        Task {
+                            actionMessage = "Deleting…"
+                            let out = await TalosPodMonitor.shared.deletePod(name: name, namespace: namespace, for: vm)
+                            actionMessage = out
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { actionMessage = nil }
+                        }
+                    } label: { Label("Delete Pod", systemImage: "trash") }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .foregroundStyle(.secondary)
+                if isLoadingLogs {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
+                }
             }
             .menuStyle(.borderlessButton)
         }
@@ -1001,6 +1058,85 @@ struct PodRow: View {
                 .stroke(DashboardPalette.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .sheet(isPresented: $showLogs) {
+            PodLogsSheet(podName: name, namespace: namespace, logs: logContent, vm: vm)
+        }
+    }
+}
+
+struct PodLogsSheet: View {
+    let podName: String
+    let namespace: String
+    let logs: String
+    let vm: VirtualMachine
+
+    @State private var content: String
+    @State private var isRefreshing = false
+    @Environment(\.dismiss) private var dismiss
+
+    init(podName: String, namespace: String, logs: String, vm: VirtualMachine) {
+        self.podName = podName
+        self.namespace = namespace
+        self.logs = logs
+        self.vm = vm
+        _content = State(initialValue: logs)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(podName)
+                        .font(.headline)
+                    Text(namespace)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    isRefreshing = true
+                    Task {
+                        content = await TalosPodMonitor.shared.fetchPodLogs(name: podName, namespace: namespace, for: vm)
+                        isRefreshing = false
+                    }
+                } label: {
+                    if isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.borderless)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(content, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy logs")
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                ScrollViewReader { proxy in
+                    Text(content)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .id("bottom")
+                        .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                        .onChange(of: content) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+            }
+            .background(Color.black.opacity(0.3))
+        }
+        .frame(minWidth: 700, minHeight: 500)
     }
 }
 
@@ -1448,18 +1584,21 @@ struct NetworkListView: View {
     }
 
     private var topologyNodes: [NetworkTopologyView.TopologyNode] {
+        let hostInfo = WireGuardManager.shared.hostInfo
         let local = NetworkTopologyView.TopologyNode(
-            id: WireGuardManager.shared.hostInfo.id,
-            name: WireGuardManager.shared.hostInfo.name,
+            id: hostInfo.id,
+            name: hostInfo.name,
             kind: .local,
-            linkType: localLinkType
+            linkType: localLinkType,
+            ipAddress: hostInfo.addressCIDR.split(separator: "/").first.map(String.init) ?? "127.0.0.1"
         )
         let peers = pairedPeers.map {
             NetworkTopologyView.TopologyNode(
                 id: $0.id,
                 name: $0.name,
                 kind: .paired,
-                linkType: linkType(forEndpointHost: $0.endpointHost)
+                linkType: linkType(forEndpointHost: $0.endpointHost),
+                ipAddress: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
             )
         }
         let discovered = discoveredHosts.map {
@@ -1467,7 +1606,8 @@ struct NetworkListView: View {
                 id: $0.id,
                 name: $0.name,
                 kind: .discovered,
-                linkType: linkType(forEndpointHost: $0.endpointHost)
+                linkType: linkType(forEndpointHost: $0.endpointHost),
+                ipAddress: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
             )
         }
         return [local] + peers + discovered

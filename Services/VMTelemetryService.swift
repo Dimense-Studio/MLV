@@ -47,12 +47,16 @@ final class VMTelemetryService {
         fi
         echo "---VM_USAGE_END---"
         echo "---PODS_START---"
-        KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
-        if [ -z "$KUBECTL_BIN" ] && [ -x /usr/local/bin/kubectl ]; then KUBECTL_BIN=/usr/local/bin/kubectl; fi
-        if [ -n "$KUBECTL_BIN" ]; then
-          "$KUBECTL_BIN" get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" | awk '{print $1 "|" $2 "|" $3 "|" $4 "|" $5}' | head -n 40
+        if [ -f /etc/talos/version ] 2>/dev/null || grep -q talos /etc/os-release 2>/dev/null; then
+          echo "TALOS_HOST_POLLED"
         else
-          echo "K3S_NOT_READY"
+          KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+          if [ -z "$KUBECTL_BIN" ] && [ -x /usr/local/bin/kubectl ]; then KUBECTL_BIN=/usr/local/bin/kubectl; fi
+          if [ -n "$KUBECTL_BIN" ]; then
+            "$KUBECTL_BIN" get pods -A --no-headers -o custom-columns="NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,CPU:.spec.containers[0].resources.requests.cpu,RAM:.spec.containers[0].resources.requests.memory" | awk '{print $1 "|" $2 "|" $3 "|" $4 "|" $5}' | head -n 40
+          else
+            echo "K3S_NOT_READY"
+          fi
         fi
         echo "---PODS_END---"
         echo "---CONTAINERS_START---"

@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             VMManager.shared.autoStartVMsIfNeeded()
             ClusterManager.shared.start()
             AppUpdateManager.shared.start()
+
+            // Initialize Talos auto-setup monitoring and pod monitoring
+            _ = TalosAutoSetupService.shared
+            TalosPodMonitor.shared.startMonitoring()
         }
     }
 

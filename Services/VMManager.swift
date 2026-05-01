@@ -152,7 +152,21 @@ public final class VMManager {
             if let pid = vm.hostServicePID {
                 assignedHostServicePIDs.insert(Int32(pid))
             }
+            vm.talosSetupCompleted = meta.talosSetupCompleted ?? false
+            vm.clusterCoreDeployed = meta.clusterCoreDeployed ?? false
+            vm.clusterCoreDashboardPassword = meta.clusterCoreDashboardPassword ?? ""
             return vm
+        }
+
+        // Restore TalosAutoSetupService state so it doesn't re-run setup or show wrong stage
+        let setupService = TalosAutoSetupService.shared
+        for vm in virtualMachines {
+            if vm.talosSetupCompleted {
+                setupService.restoreCompleted(for: vm)
+            }
+            if vm.clusterCoreDeployed {
+                setupService.restoreClusterCoreDeployed(for: vm)
+            }
         }
     }
 
@@ -1097,6 +1111,11 @@ public final class VMManager {
         }
         vm.isConnected = true
         ensureWireGuardForwarders(for: vm)
+
+        // Trigger Talos auto-setup for Talos VMs when IP changes
+        if vm.selectedDistro == .talos {
+            TalosAutoSetupService.shared.resetSetup(for: vm.id)
+        }
     }
     
     private func storedMACAddress(for vm: VirtualMachine) -> String? {
@@ -1560,6 +1579,10 @@ public final class VMManager {
         }
         restartingVMs.remove(vm.id)
         refreshBackgroundExecution()
+
+        // Reset Talos auto-setup state for this VM
+        TalosAutoSetupService.shared.resetSetup(for: vm.id)
+
         return
     }
 
@@ -1594,8 +1617,11 @@ public final class VMManager {
         wgForwarderTargetIP[vm.id] = nil
         restartingVMs.remove(vm.id)
         refreshBackgroundExecution()
+
+        // Reset Talos auto-setup state for this VM
+        TalosAutoSetupService.shared.resetSetup(for: vm.id)
     }
-    
+
     func restartVM(_ vm: VirtualMachine) async throws {
         try await stopVM(vm)
         try await startVM(vm)

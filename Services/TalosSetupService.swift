@@ -88,15 +88,33 @@ final class TalosSetupService {
 
     private func generateConfig(clusterName: String, endpoint: String, workspace: URL) async throws {
         appendLog("Generating Talos config files...")
+
+        // Create DNS patch file to fix DNS resolution issues
+        let dnsPatchFile = workspace.appendingPathComponent("dns-patch.yaml")
+        let dnsPatch = """
+---
+machine:
+    network:
+        nameservers:
+            - 8.8.8.8
+            - 1.1.1.1
+            - 8.8.4.4
+"""
+        try dnsPatch.write(to: dnsPatchFile, atomically: true, encoding: .utf8)
+
         _ = try await runTalosctl(
             arguments: [
                 "gen", "config",
                 clusterName,
                 endpoint,
                 "--output-dir", workspace.path,
-                "--force"
+                "--force",
+                "--install-disk", "/dev/vda",
+                "--config-patch", "@\(dnsPatchFile.path)"
             ]
         )
+
+        appendLog("Config generated with DNS settings (8.8.8.8, 1.1.1.1)")
     }
 
     private func applyConfig(to nodes: [String], fileName: String, workspace: URL) async throws {
@@ -108,14 +126,43 @@ final class TalosSetupService {
         let filePath = workspace.appendingPathComponent(fileName).path
         for node in nodes {
             appendLog("Applying \(fileName) to \(node)...")
-            _ = try await runTalosctl(
-                arguments: [
-                    "apply-config",
-                    "--insecure",
-                    "--nodes", node,
-                    "--file", filePath
-                ]
-            )
+
+            // Retry logic for transient failures
+            var lastError: Error?
+            for attempt in 1...5 {
+                do {
+                    _ = try await runTalosctl(
+                        arguments: [
+                            "apply-config",
+                            "--insecure",
+                            "--nodes", node,
+                            "--file", filePath
+                        ]
+                    )
+                    appendLog("Config applied successfully (attempt \(attempt))")
+                    lastError = nil
+                    break
+                } catch {
+                    lastError = error
+                    let errorString = "\(error)"
+
+                    // Check for retryable errors
+                    if errorString.contains("connection refused") ||
+                       errorString.contains("timeout") ||
+                       errorString.contains("i/o timeout") ||
+                       errorString.contains("no such host") {
+                        let waitSeconds = min(attempt * 2, 15) // 2, 4, 6, 8, 15 seconds
+                        appendLog("Attempt \(attempt) failed, retrying in \(waitSeconds)s...")
+                        try await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
+                    } else {
+                        throw error // Non-retryable error
+                    }
+                }
+            }
+
+            if let error = lastError {
+                throw error
+            }
         }
     }
 
