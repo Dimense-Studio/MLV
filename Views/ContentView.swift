@@ -347,7 +347,8 @@ struct VMListView: View {
                             Divider().opacity(0.07)
                             DashboardMetricTile(icon: "memorychip", title: "Memory", value: "\(snapshot.averageMemoryUsage)%", accent: DashboardPalette.accentSecondary)
                             Divider().opacity(0.07)
-                            DashboardMetricTile(icon: "server.rack", title: isContainerMode ? "Containers" : "Nodes", value: "\(snapshot.all.count)", accent: DashboardPalette.accentTertiary)
+                            let totalNodes = snapshot.all.count + snapshot.remoteVMs.count
+                            DashboardMetricTile(icon: "server.rack", title: isContainerMode ? "Containers" : "Nodes", value: "\(totalNodes)", accent: DashboardPalette.accentTertiary)
                             Divider().opacity(0.07)
                             DashboardMetricTile(icon: "play.circle", title: "Running", value: "\(snapshot.runningCount)", accent: DashboardPalette.accentSecondary)
                         }
@@ -365,10 +366,8 @@ struct VMListView: View {
                     )
 
                     LazyVStack(spacing: 16) {
-                        if snapshot.filtered.isEmpty {
-                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("NO DEPLOYMENTS"))
-                                .padding(.vertical, 36)
-                        } else {
+                        // Local VMs section
+                        if !snapshot.filtered.isEmpty {
                             ForEach(snapshot.filtered) { vm in
                                 VMRowCompact(vm: vm, onDoubleClick: { vm in
                                     if isContainerMode {
@@ -388,6 +387,32 @@ struct VMListView: View {
                                 }
                                 .padding(.horizontal, 4)
                             }
+                        }
+
+                        // Remote VMs from paired nodes section
+                        if !snapshot.filteredRemoteVMs.isEmpty {
+                            HStack {
+                                Image(systemName: "network")
+                                    .foregroundStyle(.secondary)
+                                Text("Remote Nodes (\(snapshot.pairedNodeCount) paired)")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 16)
+                            .padding(.bottom, 8)
+
+                            ForEach(snapshot.filteredRemoteVMs) { remoteVM in
+                                RemoteVMRow(vm: remoteVM)
+                                    .padding(.horizontal, 4)
+                            }
+                        }
+
+                        // No results case
+                        if snapshot.filtered.isEmpty && snapshot.filteredRemoteVMs.isEmpty {
+                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No local or remote deployments match your search"))
+                                .padding(.vertical, 36)
                         }
                     }
                     .padding(.horizontal, 4)
@@ -628,6 +653,83 @@ struct VMRowCompact: View {
         case .stopped:
             return .gray
         }
+    }
+}
+
+// MARK: - Remote VM Row (for VMs from paired nodes)
+
+struct RemoteVMRow: View {
+    let vm: ClusterManager.GlobalVMInfo
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Circle()
+                .fill(Color.cyan)
+                .frame(width: 11, height: 11)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(vm.name)
+                        .font(.system(size: 20, weight: .medium))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    Text("Remote")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.cyan.opacity(0.15), in: Capsule())
+
+                    if vm.isMaster {
+                        Text("Master")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
+
+                HStack(spacing: 4) {
+                    Text(vm.primaryAddress ?? vm.wgAddress)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text("via \(vm.hostEndpoint):\(vm.hostPort)")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.7))
+                }
+            }
+
+            Spacer()
+
+            // No usage meters for remote VMs (data not available via RPC)
+            HStack(spacing: 8) {
+                Image(systemName: "network")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary.opacity(0.5))
+                Text("Remote")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary.opacity(0.5))
+            }
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .background(
+            LinearGradient(
+                colors: [Color.cyan.opacity(0.10), Color.blue.opacity(0.05)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .blendMode(.screen)
+        )
+        .background(OverlayTheme.panelStrong)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.cyan.opacity(0.15), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
