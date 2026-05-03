@@ -189,8 +189,48 @@ final class ClusterManager {
             ))
         }
         
+        // Build remote targets from paired peers plus discovered nodes.
+        let peerNodes = WireGuardManager.shared.peers.map { peer in
+            Node(
+                id: peer.id,
+                name: peer.name,
+                publicKey: peer.publicKey,
+                endpointHost: peer.endpointHost,
+                endpointPort: peer.endpointPort,
+                addressCIDR: peer.addressCIDR,
+                cpuCount: 0,
+                memoryGB: 0,
+                freeDiskGB: 0,
+                lastSeen: Date(),
+                interfaceType: nil,
+                isPaired: true
+            )
+        }
+        var byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        for peerNode in peerNodes {
+            if let existing = byID[peerNode.id] {
+                byID[peerNode.id] = Node(
+                    id: existing.id,
+                    name: existing.name,
+                    publicKey: existing.publicKey,
+                    endpointHost: peerNode.endpointHost,
+                    endpointPort: peerNode.endpointPort,
+                    addressCIDR: peerNode.addressCIDR,
+                    cpuCount: existing.cpuCount,
+                    memoryGB: existing.memoryGB,
+                    freeDiskGB: existing.freeDiskGB,
+                    lastSeen: existing.lastSeen,
+                    interfaceType: existing.interfaceType,
+                    isPaired: true
+                )
+            } else {
+                byID[peerNode.id] = peerNode
+            }
+        }
+        self.nodes = Array(byID.values)
+
         // Add remote VMs with node info
-        for node in nodes {
+        for node in self.nodes {
             do {
                 let vms = try await listVMsFull(on: node)
                 // Tag VMs with their node info
@@ -571,7 +611,8 @@ final class ClusterManager {
         
         return try await withCheckedThrowingContinuation { continuation in
             let params = NWParameters.tcp
-            let endpoint = NWEndpoint.hostPort(host: .init(node.endpointHost), port: self.rpcPort)
+            let port = NWEndpoint.Port(rawValue: UInt16(node.endpointPort)) ?? self.rpcPort
+            let endpoint = NWEndpoint.hostPort(host: .init(node.endpointHost), port: port)
             let connection = NWConnection(to: endpoint, using: params)
             var didSend = false
             
