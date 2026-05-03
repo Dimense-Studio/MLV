@@ -365,6 +365,17 @@ struct VMListView: View {
                             .stroke(DashboardPalette.border.opacity(0.75), lineWidth: 1)
                     )
 
+                    HStack(spacing: 10) {
+                        Label("\(snapshot.filtered.count) local", systemImage: "desktopcomputer")
+                        Label("\(snapshot.filteredRemoteVMs.count) remote", systemImage: "network")
+                        Label("\(snapshot.pairedNodeCount) paired nodes", systemImage: "link")
+                        Spacer()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(DashboardPalette.textSecondary)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 2)
+
                     LazyVStack(spacing: 16) {
                         // Local VMs section
                         if !snapshot.filtered.isEmpty {
@@ -407,6 +418,23 @@ struct VMListView: View {
                                 RemoteVMRow(vm: remoteVM)
                                     .padding(.horizontal, 4)
                             }
+                        } else if snapshot.pairedNodeCount > 0 {
+                            HStack(spacing: 8) {
+                                Image(systemName: "info.circle")
+                                    .foregroundStyle(.secondary)
+                                Text("Paired nodes are connected, but no remote VMs are currently visible.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(OverlayTheme.panelStrong.opacity(0.35))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(DashboardPalette.border.opacity(0.7), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .padding(.horizontal, 4)
                         }
 
                         // No results case

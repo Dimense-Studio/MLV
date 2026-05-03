@@ -1,6 +1,23 @@
 import SwiftUI
 
 struct TalosSetupView: View {
+    private enum AutoSetupScope: String, CaseIterable, Identifiable {
+        case local = "Local"
+        case remote = "Remote"
+        case both = "Both"
+
+        var id: String { rawValue }
+    }
+
+    private struct TalosTarget: Identifiable {
+        let id: String
+        let name: String
+        let ipAddress: String
+        let isMaster: Bool
+        let source: AutoSetupScope
+        let isConnected: Bool
+    }
+
     let search: String
 
     // Auto-setup service
@@ -21,6 +38,7 @@ struct TalosSetupView: View {
     @State private var isDeployingClusterCore = false
     @State private var clusterCoreDeployError: String?
     @State private var clusterCoreDeploySuccess = false
+    @State private var autoSetupScope: AutoSetupScope = .both
 
     private var filteredLogs: [String] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,6 +50,47 @@ struct TalosSetupView: View {
     private var runningTalosVMs: [VirtualMachine] {
         VMManager.shared.virtualMachines.filter {
             $0.selectedDistro == .talos && $0.state == .running
+        }
+    }
+
+    private var remoteTalosTargets: [TalosTarget] {
+        let localNodeID = WireGuardManager.shared.hostInfo.id
+        return ClusterManager.shared.clusterVMs
+            .filter { $0.nodeID != localNodeID && isValidIP($0.primaryAddress ?? $0.wgAddress ?? "") }
+            .map { vm in
+                TalosTarget(
+                    id: "\(vm.nodeID)-\(vm.id.uuidString)",
+                    name: vm.name,
+                    ipAddress: vm.primaryAddress ?? vm.wgAddress ?? "",
+                    isMaster: vm.isMaster,
+                    source: .remote,
+                    isConnected: true
+                )
+            }
+    }
+
+    private var allTalosTargets: [TalosTarget] {
+        let local = detectedVMs.map { vm in
+            TalosTarget(
+                id: vm.id.uuidString,
+                name: vm.name,
+                ipAddress: vm.ipAddress,
+                isMaster: vm.isMaster,
+                source: .local,
+                isConnected: vm.isConnected
+            )
+        }
+        return local + remoteTalosTargets
+    }
+
+    private var scopedTalosTargets: [TalosTarget] {
+        switch autoSetupScope {
+        case .local:
+            return allTalosTargets.filter { $0.source == .local }
+        case .remote:
+            return allTalosTargets.filter { $0.source == .remote }
+        case .both:
+            return allTalosTargets
         }
     }
 
@@ -322,30 +381,30 @@ struct TalosSetupView: View {
         DashboardPanel {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Detected VMs")
+                    Text("Detected Talos Targets")
                         .font(.headline)
                         .foregroundStyle(OverlayTheme.textPrimary)
 
                     Spacer()
 
-                    Text("\(detectedVMs.count) running")
+                    Text("\(detectedVMs.count) local • \(remoteTalosTargets.count) remote")
                         .font(.system(size: 12))
                         .foregroundStyle(OverlayTheme.textSecondary)
                 }
 
-                if detectedVMs.isEmpty {
+                if allTalosTargets.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "info.circle")
                             .foregroundStyle(.secondary)
-                        Text("No running Talos VMs detected")
+                        Text("No Talos nodes detected locally or remotely")
                             .font(.system(size: 13))
                             .foregroundStyle(OverlayTheme.textSecondary)
                     }
                     .padding(.vertical, 20)
                 } else {
                     LazyVStack(spacing: 8) {
-                        ForEach(detectedVMs) { vm in
-                            vmRow(vm)
+                        ForEach(allTalosTargets) { target in
+                            targetRow(target)
                         }
                     }
                 }
@@ -353,24 +412,33 @@ struct TalosSetupView: View {
         }
     }
 
-    private func vmRow(_ vm: VirtualMachine) -> some View {
-        HStack(spacing: 12) {
+    private func targetRow(_ target: TalosTarget) -> some View {
+        let localVM = detectedVMs.first(where: { $0.id.uuidString == target.id })
+
+        return HStack(spacing: 12) {
             // Status icon
-            Image(systemName: vm.isConnected ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(vm.isConnected ? .green : .orange)
+            Image(systemName: target.isConnected ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(target.isConnected ? .green : .orange)
                 .font(.system(size: 18))
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(vm.name)
+                Text(target.name)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(OverlayTheme.textPrimary)
 
                 HStack(spacing: 6) {
-                    Text(vm.ipAddress)
+                    Text(target.ipAddress)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(OverlayTheme.textSecondary)
 
-                    if vm.isMaster {
+                    Text(target.source == .local ? "Local" : "Remote")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background((target.source == .local ? Color.gray : Color.cyan).opacity(0.2))
+                        .clipShape(Capsule())
+
+                    if target.isMaster {
                         Text("Control Plane")
                             .font(.system(size: 10, weight: .medium))
                             .padding(.horizontal, 6)
@@ -379,7 +447,7 @@ struct TalosSetupView: View {
                             .clipShape(Capsule())
                     }
 
-                    if vm.talosSetupCompleted {
+                    if let localVM, localVM.talosSetupCompleted {
                         Label("Talos Ready", systemImage: "checkmark.seal.fill")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.green)
@@ -389,7 +457,7 @@ struct TalosSetupView: View {
                             .clipShape(Capsule())
                     }
 
-                    if vm.clusterCoreDeployed {
+                    if let localVM, localVM.clusterCoreDeployed {
                         Label("ClusterCore", systemImage: "server.rack")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.purple)
@@ -400,7 +468,7 @@ struct TalosSetupView: View {
 
                         // Dashboard URL shortcut
                         Button {
-                            if let url = URL(string: "http://\(vm.ipAddress):30005") {
+                            if let url = URL(string: "http://\(target.ipAddress):30005") {
                                 NSWorkspace.shared.open(url)
                             }
                         } label: {
@@ -409,20 +477,20 @@ struct TalosSetupView: View {
                                 .foregroundStyle(.cyan)
                         }
                         .buttonStyle(.borderless)
-                        .help("http://\(vm.ipAddress):30005")
+                        .help("http://\(target.ipAddress):30005")
 
                         // Copy password button
-                        if !vm.clusterCoreDashboardPassword.isEmpty {
+                        if !localVM.clusterCoreDashboardPassword.isEmpty {
                             Button {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(vm.clusterCoreDashboardPassword, forType: .string)
+                                NSPasteboard.general.setString(localVM.clusterCoreDashboardPassword, forType: .string)
                             } label: {
                                 Label("Copy Password", systemImage: "key.fill")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(.orange)
                             }
                             .buttonStyle(.borderless)
-                            .help("Copy dashboard password: \(vm.clusterCoreDashboardPassword)")
+                            .help("Copy dashboard password: \(localVM.clusterCoreDashboardPassword)")
                         }
                     }
                 }
@@ -430,11 +498,11 @@ struct TalosSetupView: View {
 
             Spacer()
 
-            if vm.isConnected {
+            if target.isConnected {
                 // Manual bootstrap button for control plane
-                if vm.isMaster {
+                if target.isMaster, let localVM {
                     Button {
-                        runManualBootstrap(vm)
+                        runManualBootstrap(localVM)
                     } label: {
                         Image(systemName: "play.circle")
                             .font(.system(size: 14))
@@ -445,13 +513,16 @@ struct TalosSetupView: View {
                 }
 
                 Button {
-                    TalosAutoSetupService.shared.retrySetup(for: vm)
+                    if let localVM {
+                        TalosAutoSetupService.shared.retrySetup(for: localVM)
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.borderless)
-                .help("Retry full setup")
+                .help(localVM == nil ? "Remote target: use Auto Setup scope" : "Retry full setup")
+                .disabled(localVM == nil)
             }
         }
         .padding(12)
@@ -467,15 +538,21 @@ struct TalosSetupView: View {
         HStack(spacing: 12) {
             // Auto setup all button
             Button {
-                for vm in detectedVMs where vm.isConnected {
-                    TalosAutoSetupService.shared.retrySetup(for: vm)
-                }
+                runAutoSetupForScope()
             } label: {
-                Label("Auto Setup All", systemImage: "wand.and.stars")
+                Label("Auto Setup \(autoSetupScope.rawValue)", systemImage: "wand.and.stars")
                     .font(.system(size: 13, weight: .semibold))
             }
             .buttonStyle(.borderedProminent)
-            .disabled(detectedVMs.isEmpty || autoService.isRunning)
+            .disabled(scopedTalosTargets.isEmpty || autoService.isRunning || manualService.isRunning)
+
+            Picker("Scope", selection: $autoSetupScope) {
+                ForEach(AutoSetupScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 240)
 
             // Manual toggle
             Button {
@@ -680,6 +757,33 @@ struct TalosSetupView: View {
             await manualService.configureCluster(
                 clusterName: clusterName,
                 endpoint: endpoint,
+                controlPlaneIPs: controlPlanes,
+                workerIPs: workers,
+                shouldBootstrap: true,
+                shouldFetchKubeconfig: true
+            )
+        }
+    }
+
+    private func runAutoSetupForScope() {
+        let localTargets = scopedTalosTargets.filter { $0.source == .local && $0.isConnected }
+        let remoteTargets = scopedTalosTargets.filter { $0.source == .remote && $0.isConnected }
+
+        for target in localTargets {
+            if let vm = detectedVMs.first(where: { $0.id.uuidString == target.id }) {
+                TalosAutoSetupService.shared.retrySetup(for: vm)
+            }
+        }
+
+        guard !remoteTargets.isEmpty else { return }
+        let controlPlanes = remoteTargets.filter(\.isMaster).map(\.ipAddress)
+        let workers = remoteTargets.filter { !$0.isMaster }.map(\.ipAddress)
+        guard let primary = controlPlanes.first else { return }
+
+        Task {
+            await manualService.configureCluster(
+                clusterName: clusterName.isEmpty ? "mlv-talos-remote" : clusterName,
+                endpoint: "https://\(primary):6443",
                 controlPlaneIPs: controlPlanes,
                 workerIPs: workers,
                 shouldBootstrap: true,
