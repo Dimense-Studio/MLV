@@ -20,16 +20,6 @@ struct VMMetadata: Codable {
     let secondaryNetworkMode: String?
     let secondaryBridgeInterfaceName: String?
     let clusterRole: String?
-    let wgControlPrivateKeyBase64: String?
-    let wgControlPublicKeyBase64: String?
-    let wgControlAddressCIDR: String?
-    let wgControlListenPort: Int?
-    let wgControlHostForwardPort: Int?
-    let wgDataPrivateKeyBase64: String?
-    let wgDataPublicKeyBase64: String?
-    let wgDataAddressCIDR: String?
-    let wgDataListenPort: Int?
-    let wgDataHostForwardPort: Int?
     let autoStartOnLaunch: Bool?
     let terminalConsoleHostPort: Int?
     let monitoredProcessPID: Int?
@@ -47,9 +37,7 @@ struct VMMetadata: Codable {
         case id, name, cpuCount, memorySizeMB, memorySizeGB, systemDiskSizeGB, dataDiskSizeGB
         case systemDiskProfile, dataDiskProfile, selectedDistro, isMaster, stage, isInstalled
         case networkMode, bridgeInterfaceName, secondaryNetworkEnabled, secondaryNetworkMode
-        case secondaryBridgeInterfaceName, clusterRole, wgControlPrivateKeyBase64, wgControlPublicKeyBase64
-        case wgControlAddressCIDR, wgControlListenPort, wgControlHostForwardPort, wgDataPrivateKeyBase64
-        case wgDataPublicKeyBase64, wgDataAddressCIDR, wgDataListenPort, wgDataHostForwardPort
+        case secondaryBridgeInterfaceName, clusterRole
         case autoStartOnLaunch, terminalConsoleHostPort, monitoredProcessPID, monitoredProcessName, hostServicePID
         case containerImageReference, containerMounts, containerPorts, isContainerWorkload
         case talosSetupCompleted, clusterCoreDeployed, clusterCoreDashboardPassword
@@ -83,16 +71,6 @@ struct VMMetadata: Codable {
         secondaryNetworkMode = try container.decodeIfPresent(String.self, forKey: .secondaryNetworkMode)
         secondaryBridgeInterfaceName = try container.decodeIfPresent(String.self, forKey: .secondaryBridgeInterfaceName)
         clusterRole = try container.decodeIfPresent(String.self, forKey: .clusterRole)
-        wgControlPrivateKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgControlPrivateKeyBase64)
-        wgControlPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgControlPublicKeyBase64)
-        wgControlAddressCIDR = try container.decodeIfPresent(String.self, forKey: .wgControlAddressCIDR)
-        wgControlListenPort = try container.decodeIfPresent(Int.self, forKey: .wgControlListenPort)
-        wgControlHostForwardPort = try container.decodeIfPresent(Int.self, forKey: .wgControlHostForwardPort)
-        wgDataPrivateKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgDataPrivateKeyBase64)
-        wgDataPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .wgDataPublicKeyBase64)
-        wgDataAddressCIDR = try container.decodeIfPresent(String.self, forKey: .wgDataAddressCIDR)
-        wgDataListenPort = try container.decodeIfPresent(Int.self, forKey: .wgDataListenPort)
-        wgDataHostForwardPort = try container.decodeIfPresent(Int.self, forKey: .wgDataHostForwardPort)
         autoStartOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoStartOnLaunch)
         terminalConsoleHostPort = try container.decodeIfPresent(Int.self, forKey: .terminalConsoleHostPort)
         monitoredProcessPID = try container.decodeIfPresent(Int.self, forKey: .monitoredProcessPID)
@@ -127,16 +105,6 @@ struct VMMetadata: Codable {
         try container.encodeIfPresent(secondaryNetworkMode, forKey: .secondaryNetworkMode)
         try container.encodeIfPresent(secondaryBridgeInterfaceName, forKey: .secondaryBridgeInterfaceName)
         try container.encodeIfPresent(clusterRole, forKey: .clusterRole)
-        try container.encodeIfPresent(wgControlPrivateKeyBase64, forKey: .wgControlPrivateKeyBase64)
-        try container.encodeIfPresent(wgControlPublicKeyBase64, forKey: .wgControlPublicKeyBase64)
-        try container.encodeIfPresent(wgControlAddressCIDR, forKey: .wgControlAddressCIDR)
-        try container.encodeIfPresent(wgControlListenPort, forKey: .wgControlListenPort)
-        try container.encodeIfPresent(wgControlHostForwardPort, forKey: .wgControlHostForwardPort)
-        try container.encodeIfPresent(wgDataPrivateKeyBase64, forKey: .wgDataPrivateKeyBase64)
-        try container.encodeIfPresent(wgDataPublicKeyBase64, forKey: .wgDataPublicKeyBase64)
-        try container.encodeIfPresent(wgDataAddressCIDR, forKey: .wgDataAddressCIDR)
-        try container.encodeIfPresent(wgDataListenPort, forKey: .wgDataListenPort)
-        try container.encodeIfPresent(wgDataHostForwardPort, forKey: .wgDataHostForwardPort)
         try container.encodeIfPresent(autoStartOnLaunch, forKey: .autoStartOnLaunch)
         try container.encodeIfPresent(terminalConsoleHostPort, forKey: .terminalConsoleHostPort)
         try container.encodeIfPresent(monitoredProcessPID, forKey: .monitoredProcessPID)
@@ -170,16 +138,6 @@ struct VMMetadata: Codable {
         secondaryNetworkMode: String?,
         secondaryBridgeInterfaceName: String?,
         clusterRole: String?,
-        wgControlPrivateKeyBase64: String?,
-        wgControlPublicKeyBase64: String?,
-        wgControlAddressCIDR: String?,
-        wgControlListenPort: Int?,
-        wgControlHostForwardPort: Int?,
-        wgDataPrivateKeyBase64: String?,
-        wgDataPublicKeyBase64: String?,
-        wgDataAddressCIDR: String?,
-        wgDataListenPort: Int?,
-        wgDataHostForwardPort: Int?,
         autoStartOnLaunch: Bool?,
         terminalConsoleHostPort: Int?,
         monitoredProcessPID: Int?,
@@ -211,16 +169,6 @@ struct VMMetadata: Codable {
         self.secondaryNetworkMode = secondaryNetworkMode
         self.secondaryBridgeInterfaceName = secondaryBridgeInterfaceName
         self.clusterRole = clusterRole
-        self.wgControlPrivateKeyBase64 = wgControlPrivateKeyBase64
-        self.wgControlPublicKeyBase64 = wgControlPublicKeyBase64
-        self.wgControlAddressCIDR = wgControlAddressCIDR
-        self.wgControlListenPort = wgControlListenPort
-        self.wgControlHostForwardPort = wgControlHostForwardPort
-        self.wgDataPrivateKeyBase64 = wgDataPrivateKeyBase64
-        self.wgDataPublicKeyBase64 = wgDataPublicKeyBase64
-        self.wgDataAddressCIDR = wgDataAddressCIDR
-        self.wgDataListenPort = wgDataListenPort
-        self.wgDataHostForwardPort = wgDataHostForwardPort
         self.autoStartOnLaunch = autoStartOnLaunch
         self.terminalConsoleHostPort = terminalConsoleHostPort
         self.monitoredProcessPID = monitoredProcessPID
@@ -275,16 +223,6 @@ class VMStatePersistence {
                     secondaryNetworkMode: vm.secondaryNetworkMode.rawValue,
                     secondaryBridgeInterfaceName: vm.secondaryBridgeInterfaceName,
                     clusterRole: vm.clusterRole.rawValue,
-                    wgControlPrivateKeyBase64: vm.wgControlPrivateKeyBase64,
-                    wgControlPublicKeyBase64: vm.wgControlPublicKeyBase64,
-                    wgControlAddressCIDR: vm.wgControlAddressCIDR,
-                    wgControlListenPort: vm.wgControlListenPort,
-                    wgControlHostForwardPort: vm.wgControlHostForwardPort,
-                    wgDataPrivateKeyBase64: vm.wgDataPrivateKeyBase64,
-                    wgDataPublicKeyBase64: vm.wgDataPublicKeyBase64,
-                    wgDataAddressCIDR: vm.wgDataAddressCIDR,
-                    wgDataListenPort: vm.wgDataListenPort,
-                    wgDataHostForwardPort: vm.wgDataHostForwardPort,
                     autoStartOnLaunch: vm.autoStartOnLaunch,
                     terminalConsoleHostPort: vm.terminalConsoleHostPort,
                     monitoredProcessPID: vm.monitoredProcessPID,

@@ -27,10 +27,6 @@ final class VMProvisioningService {
             provisionLonghornDisk(vm)
         }
 
-        if !vm.wireguardConfigured {
-            provisionWireGuard(vm)
-        }
-
         provisionNetworkHealthChecks(vm)
     }
 
@@ -301,63 +297,6 @@ final class VMProvisioningService {
         systemctl enable --now mlv-net-health.timer
         """
 
-        executeCommand(vm, script)
-    }
-
-    private func provisionWireGuard(_ vm: VirtualMachine) {
-        guard let privKey = vm.wgControlPrivateKeyBase64,
-              let address = vm.wgControlAddressCIDR else { return }
-
-        vm.addLog("Configuring WireGuard control-plane fallback network (no storage/data routing)...")
-
-        var conf = """
-[Interface]
-PrivateKey = \(privKey)
-Address = \(address)
-ListenPort = 51820
-"""
-
-        let allVMs = ClusterManager.shared.clusterVMs.filter { $0.id != vm.id }
-        let myNodeID = WireGuardManager.shared.hostInfo.id
-
-        for peer in allVMs {
-            let peerIP = peer.wgAddress.components(separatedBy: "/").first ?? peer.wgAddress
-            conf += """
-
-[Peer]
-PublicKey = \(peer.publicKey)
-AllowedIPs = \(peerIP)/32
-"""
-
-            if peer.nodeID == myNodeID,
-               let localPeer = VMManager.shared.virtualMachines.first(where: { $0.id == peer.id }),
-               localPeer.state == .running,
-               localPeer.ipAddress != "Detecting..." {
-                conf += "\nEndpoint = \(localPeer.ipAddress):51820"
-            } else if !peer.hostEndpoint.isEmpty && peer.hostPort > 0 {
-                conf += "\nEndpoint = \(peer.hostEndpoint):\(peer.hostPort)"
-            }
-
-            conf += "\nPersistentKeepalive = 25"
-        }
-
-        let base64Conf = Data(conf.utf8).base64EncodedString()
-
-        let script = """
-if ! command -v wg >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-        apt-get update && apt-get install -y wireguard wireguard-tools
-    elif command -v apk >/dev/null 2>&1; then
-        apk add wireguard-tools
-    fi
-fi
-mkdir -p /etc/wireguard
-echo "\(base64Conf)" | base64 -d > /etc/wireguard/wg0.conf
-wg-quick down wg0 >/dev/null 2>&1 || true
-wg-quick up wg0
-systemctl enable wg-quick@wg0 >/dev/null 2>&1 || true
-echo "WG_READY"
-"""
         executeCommand(vm, script)
     }
 

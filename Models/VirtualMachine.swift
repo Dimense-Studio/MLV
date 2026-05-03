@@ -118,46 +118,6 @@ class VirtualMachine: Identifiable {
     var autoStartOnLaunch: Bool = false {
         didSet { persist() }
     }
-    
-    var wgControlPrivateKeyBase64: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgControlPublicKeyBase64: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgControlAddressCIDR: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgControlListenPort: Int = 51820 {
-        didSet { persist() }
-    }
-    
-    var wgControlHostForwardPort: Int = 0 {
-        didSet { persist() }
-    }
-    
-    var wgDataPrivateKeyBase64: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgDataPublicKeyBase64: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgDataAddressCIDR: String? = nil {
-        didSet { persist() }
-    }
-    
-    var wgDataListenPort: Int = 51821 {
-        didSet { persist() }
-    }
-    
-    var wgDataHostForwardPort: Int = 0 {
-        didSet { persist() }
-    }
 
     var terminalConsoleHostPort: Int = 0 {
         didSet { persist() }
@@ -274,6 +234,7 @@ class VirtualMachine: Identifiable {
     var dns: [String] = ["8.8.8.8", "1.1.1.1"]
     var connectionType: String = "Bridged (Virtualization.framework)"
     var isConnected: Bool = false
+    var hostDeviceIP: String = ""  // The host Mac's LAN IP (192.168.2.11 etc.)
     
     func addLog(_ message: String, isError: Bool = false) {
         let log = DeploymentLog(message: message, isError: isError)

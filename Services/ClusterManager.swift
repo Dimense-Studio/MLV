@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Network
 import SwiftUI
@@ -18,6 +17,8 @@ final class ClusterManager {
         let memoryGB: Int
         let freeDiskGB: Int
         let lastSeen: Date
+        var interfaceType: HostResources.NetworkInterface.InterfaceType? = nil
+        var isPaired: Bool = false
     }
     
     struct WorkerConfigPayload: Codable {
@@ -75,11 +76,7 @@ final class ClusterManager {
         }
     }
     
-    struct Envelope: Codable {
-        let senderID: String
-        let senderPublicKey: String
-        let sealedBoxCombined: Data
-    }
+    // Envelope removed - direct TCP RPC without encryption
 
     struct BandwidthTestResult: Codable {
         let receiverID: String
@@ -92,13 +89,30 @@ final class ClusterManager {
         let nodeID: String
         let name: String
         let publicKey: String
-        let wgAddress: String
+        let wgAddress: String?  // Now optional since we use direct IP
         let hostEndpoint: String
         let hostPort: Int
         let primaryAddress: String?
         let isMaster: Bool
         let networkInterface: String?
         let networkSubnetPrefix: String?
+        var nodeName: String? = nil
+        var interfaceType: HostResources.NetworkInterface.InterfaceType? = nil
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case nodeID
+            case name
+            case publicKey
+            case wgAddress
+            case hostEndpoint
+            case hostPort
+            case primaryAddress
+            case isMaster
+            case networkInterface
+            case networkSubnetPrefix
+            case nodeName
+        }
     }
     
     private let rpcPort: NWEndpoint.Port = 7124
@@ -156,31 +170,50 @@ final class ClusterManager {
         var allVMs: [GlobalVMInfo] = []
         
         // Add local VMs
+        let localNodeID = WireGuardManager.shared.hostInfo.id
         for vm in VMManager.shared.virtualMachines {
-            guard let pub = vm.wgControlPublicKeyBase64,
-                  let addr = vm.wgControlAddressCIDR else { continue }
             allVMs.append(GlobalVMInfo(
                 id: vm.id,
-                nodeID: WireGuardManager.shared.hostInfo.id,
+                nodeID: localNodeID,
                 name: vm.name,
-                publicKey: pub,
-                wgAddress: addr,
+                publicKey: localNodeID,
+                wgAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
                 hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
-                hostPort: vm.wgControlHostForwardPort,
+                hostPort: 0,
                 primaryAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
                 isMaster: vm.isMaster,
                 networkInterface: vm.bridgeInterfaceName,
-                networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress)
+                networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress),
+                nodeName: Host.current().localizedName ?? "This Mac",
+                interfaceType: HostResources.bestAvailableInterface()?.type
             ))
         }
         
-        // Add remote VMs
+        // Add remote VMs with node info
         for node in nodes {
             do {
                 let vms = try await listVMsFull(on: node)
-                allVMs.append(contentsOf: vms)
+                // Tag VMs with their node info
+                let enriched = vms.map { vm -> GlobalVMInfo in
+                    GlobalVMInfo(
+                        id: vm.id,
+                        nodeID: vm.nodeID,
+                        name: vm.name,
+                        publicKey: vm.publicKey,
+                        wgAddress: vm.wgAddress,
+                        hostEndpoint: vm.hostEndpoint,
+                        hostPort: vm.hostPort,
+                        primaryAddress: vm.primaryAddress,
+                        isMaster: vm.isMaster,
+                        networkInterface: vm.networkInterface,
+                        networkSubnetPrefix: vm.networkSubnetPrefix,
+                        nodeName: node.name,
+                        interfaceType: node.interfaceType
+                    )
+                }
+                allVMs.append(contentsOf: enriched)
             } catch {
-                // Skip failed nodes
+                // Node unreachable, skip
             }
         }
         self.clusterVMs = allVMs
@@ -195,9 +228,13 @@ final class ClusterManager {
     
     private func refreshNodeInfo(for host: DiscoveryManager.DiscoveredHost) {
         DiscoveryManager.shared.requestPeerInfo(host) { info in
-            guard let info else { return }
+            guard let info = info else { return }
             DispatchQueue.main.async {
                 WireGuardManager.shared.addOrUpdatePeer(from: info)
+                
+                // Get the interface type from the discovered host
+                let ifaceType = DiscoveryManager.shared.interfaceTypeForHost(id: host.id)
+                
                 let node = Node(
                     id: info.id,
                     name: info.name,
@@ -208,12 +245,30 @@ final class ClusterManager {
                     cpuCount: info.cpuCount,
                     memoryGB: info.memoryGB,
                     freeDiskGB: info.freeDiskGB,
-                    lastSeen: Date()
+                    lastSeen: Date(),
+                    interfaceType: ifaceType ?? info.primaryInterfaceType,
+                    isPaired: true
                 )
                 var byId = Dictionary(uniqueKeysWithValues: self.nodes.map { ($0.id, $0) })
                 byId[node.id] = node
-                self.nodes = Array(byId.values).sorted { $0.name < $1.name }
+                self.nodes = Array(byId.values).sorted { a, b in
+                    // Sort by interface priority first, then by name
+                    let priorityA = self.interfacePriority(a.interfaceType)
+                    let priorityB = self.interfacePriority(b.interfaceType)
+                    if priorityA != priorityB { return priorityA < priorityB }
+                    return a.name < b.name
+                }
             }
+        }
+    }
+
+    private func interfacePriority(_ type: HostResources.NetworkInterface.InterfaceType?) -> Int {
+        guard let type else { return 3 }
+        switch type {
+        case .thunderbolt: return 0
+        case .ethernet: return 1
+        case .wifi: return 2
+        case .unknown: return 3
         }
     }
     
@@ -246,6 +301,44 @@ final class ClusterManager {
             throw NSError(domain: "ClusterRPC", code: 2, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Remote list failed"])
         }
         return try JSONDecoder().decode([VMInfo].self, from: data)
+    }
+
+    // MARK: - Remote VM Lifecycle
+
+    func startVMonNode(_ node: Node, vmID: UUID) async throws {
+        let payload = try JSONEncoder().encode(vmID)
+        let req = RPCRequest(id: UUID().uuidString, type: "startVM", payload: payload)
+        let resp = try await send(req, to: node)
+        if !resp.ok {
+            throw NSError(domain: "ClusterRPC", code: 10, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Failed to start VM on remote node"])
+        }
+    }
+
+    func stopVMonNode(_ node: Node, vmID: UUID) async throws {
+        let payload = try JSONEncoder().encode(vmID)
+        let req = RPCRequest(id: UUID().uuidString, type: "stopVM", payload: payload)
+        let resp = try await send(req, to: node)
+        if !resp.ok {
+            throw NSError(domain: "ClusterRPC", code: 11, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Failed to stop VM on remote node"])
+        }
+    }
+
+    func restartVMonNode(_ node: Node, vmID: UUID) async throws {
+        let payload = try JSONEncoder().encode(vmID)
+        let req = RPCRequest(id: UUID().uuidString, type: "restartVM", payload: payload)
+        let resp = try await send(req, to: node)
+        if !resp.ok {
+            throw NSError(domain: "ClusterRPC", code: 12, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Failed to restart VM on remote node"])
+        }
+    }
+
+    func deleteVMonNode(_ node: Node, vmID: UUID) async throws {
+        let payload = try JSONEncoder().encode(vmID)
+        let req = RPCRequest(id: UUID().uuidString, type: "deleteVM", payload: payload)
+        let resp = try await send(req, to: node)
+        if !resp.ok {
+            throw NSError(domain: "ClusterRPC", code: 13, userInfo: [NSLocalizedDescriptionKey: resp.errorMessage ?? "Failed to delete VM on remote node"])
+        }
     }
 
     func sendWorkerConfig(_ config: WorkerConfigPayload, to node: Node) async throws {
@@ -303,34 +396,28 @@ final class ClusterManager {
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { return }
                 connection.start(queue: .global(qos: .utility))
-                self.receiveAll(connection: connection, maximumBytes: self.maxRPCPayloadBytes) { data in
-                    Task { @MainActor in
-                        guard let data,
-                              let env = try? JSONDecoder().decode(Envelope.self, from: data),
-                              let sealed = try? ChaChaPoly.SealedBox(combined: env.sealedBoxCombined),
-                              let key = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: env.senderPublicKey),
-                              let decrypted = try? ChaChaPoly.open(sealed, using: key),
-                              let req = try? self.decodeRPCRequest(from: decrypted) else {
-                            connection.cancel()
-                            return
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        self.receiveAll(connection: connection, maximumBytes: self.maxRPCPayloadBytes) { data in
+                            Task { @MainActor in
+                                guard let data,
+                                      let req = try? self.decodeRPCRequest(from: data) else {
+                                    connection.cancel()
+                                    return
+                                }
+                                
+                                let response = await self.handle(req)
+                                let out = (try? self.encodeRPCResponse(response)) ?? Data()
+                                connection.send(content: out, completion: .contentProcessed { _ in
+                                    connection.cancel()
+                                })
+                            }
                         }
-                        
-                        let response = await self.handle(req)
-                        let encoded = (try? self.encodeRPCResponse(response)) ?? Data()
-                        guard let replyKey = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: env.senderPublicKey),
-                              let sealedReply = try? ChaChaPoly.seal(encoded, using: replyKey).combined else {
-                            connection.cancel()
-                            return
-                        }
-                        let replyEnv = Envelope(
-                            senderID: WireGuardManager.shared.hostInfo.id,
-                            senderPublicKey: WireGuardManager.shared.hostInfo.publicKey,
-                            sealedBoxCombined: sealedReply
-                        )
-                        let out = (try? JSONEncoder().encode(replyEnv)) ?? Data()
-                        connection.send(content: out, completion: .contentProcessed { _ in
-                            connection.cancel()
-                        })
+                    case .failed, .cancelled:
+                        connection.cancel()
+                    default:
+                        break
                     }
                 }
             }
@@ -347,21 +434,22 @@ final class ClusterManager {
         do {
             switch req.type {
             case "listVMsFull":
-                let vms = VMManager.shared.virtualMachines.compactMap { vm -> GlobalVMInfo? in
-                    guard let pub = vm.wgControlPublicKeyBase64,
-                          let addr = vm.wgControlAddressCIDR else { return nil }
+                let vms = VMManager.shared.virtualMachines.map { vm -> GlobalVMInfo in
+                    let localNodeID = WireGuardManager.shared.hostInfo.id
                     return GlobalVMInfo(
                         id: vm.id,
-                        nodeID: WireGuardManager.shared.hostInfo.id,
+                        nodeID: localNodeID,
                         name: vm.name,
-                        publicKey: pub,
-                        wgAddress: addr,
+                        publicKey: localNodeID,
+                        wgAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
                         hostEndpoint: WireGuardManager.shared.hostInfo.endpointHost,
-                        hostPort: vm.wgControlHostForwardPort,
+                        hostPort: 0,
                         primaryAddress: vm.ipAddress == "Detecting..." ? nil : vm.ipAddress,
                         isMaster: vm.isMaster,
                         networkInterface: vm.bridgeInterfaceName,
-                        networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress)
+                        networkSubnetPrefix: VMNetworkService.shared.subnetPrefix(forIPAddress: vm.ipAddress),
+                        nodeName: Host.current().localizedName ?? "This Mac",
+                        interfaceType: HostResources.bestAvailableInterface()?.type
                     )
                 }
                 let payload = try JSONEncoder().encode(vms)
@@ -428,6 +516,48 @@ final class ClusterManager {
                     mbps: mbps
                 )
                 return RPCResponse(id: req.id, ok: true, payload: try JSONEncoder().encode(result), errorMessage: nil)
+
+            // MARK: - Remote VM Lifecycle
+            case "startVM":
+                guard let p = req.payload, let vmID = try? JSONDecoder().decode(UUID.self, from: p) else {
+                    throw NSError(domain: "ClusterRPC", code: 10, userInfo: [NSLocalizedDescriptionKey: "Invalid VM ID"])
+                }
+                guard let vm = VMManager.shared.virtualMachines.first(where: { $0.id == vmID }) else {
+                    throw NSError(domain: "ClusterRPC", code: 10, userInfo: [NSLocalizedDescriptionKey: "VM not found"])
+                }
+                try await VMManager.shared.startVM(vm)
+                return RPCResponse(id: req.id, ok: true, payload: nil, errorMessage: nil)
+
+            case "stopVM":
+                guard let p = req.payload, let vmID = try? JSONDecoder().decode(UUID.self, from: p) else {
+                    throw NSError(domain: "ClusterRPC", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid VM ID"])
+                }
+                guard let vm = VMManager.shared.virtualMachines.first(where: { $0.id == vmID }) else {
+                    throw NSError(domain: "ClusterRPC", code: 11, userInfo: [NSLocalizedDescriptionKey: "VM not found"])
+                }
+                try await VMManager.shared.stopVM(vm)
+                return RPCResponse(id: req.id, ok: true, payload: nil, errorMessage: nil)
+
+            case "restartVM":
+                guard let p = req.payload, let vmID = try? JSONDecoder().decode(UUID.self, from: p) else {
+                    throw NSError(domain: "ClusterRPC", code: 12, userInfo: [NSLocalizedDescriptionKey: "Invalid VM ID"])
+                }
+                guard let vm = VMManager.shared.virtualMachines.first(where: { $0.id == vmID }) else {
+                    throw NSError(domain: "ClusterRPC", code: 12, userInfo: [NSLocalizedDescriptionKey: "VM not found"])
+                }
+                try await VMManager.shared.restartVM(vm)
+                return RPCResponse(id: req.id, ok: true, payload: nil, errorMessage: nil)
+
+            case "deleteVM":
+                guard let p = req.payload, let vmID = try? JSONDecoder().decode(UUID.self, from: p) else {
+                    throw NSError(domain: "ClusterRPC", code: 13, userInfo: [NSLocalizedDescriptionKey: "Invalid VM ID"])
+                }
+                guard let vm = VMManager.shared.virtualMachines.first(where: { $0.id == vmID }) else {
+                    throw NSError(domain: "ClusterRPC", code: 13, userInfo: [NSLocalizedDescriptionKey: "VM not found"])
+                }
+                try await VMManager.shared.deleteVM(vm)
+                return RPCResponse(id: req.id, ok: true, payload: nil, errorMessage: nil)
+
             default:
                 return RPCResponse(id: req.id, ok: false, payload: nil, errorMessage: "Unknown request type: \(req.type)")
             }
@@ -437,47 +567,43 @@ final class ClusterManager {
     }
     
     private func send(_ request: RPCRequest, to node: Node) async throws -> RPCResponse {
-        let encoded = try encodeRPCRequest(request)
-        guard let key = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: node.publicKey) else {
-            throw NSError(domain: "ClusterRPC", code: 4, userInfo: [NSLocalizedDescriptionKey: "Encryption failed"])
-        }
-        let sealed = try ChaChaPoly.seal(encoded, using: key).combined
-        let env = Envelope(
-            senderID: WireGuardManager.shared.hostInfo.id,
-            senderPublicKey: WireGuardManager.shared.hostInfo.publicKey,
-            sealedBoxCombined: sealed
-        )
-        let out = try JSONEncoder().encode(env)
+        let out = try encodeRPCRequest(request)
         
         return try await withCheckedThrowingContinuation { continuation in
             let params = NWParameters.tcp
             let endpoint = NWEndpoint.hostPort(host: .init(node.endpointHost), port: self.rpcPort)
             let connection = NWConnection(to: endpoint, using: params)
+            var didSend = false
+            
             connection.stateUpdateHandler = { state in
-                if case .failed(let err) = state {
+                switch state {
+                case .ready:
+                    guard !didSend else { return }
+                    didSend = true
+                    connection.send(content: out, completion: .contentProcessed { _ in
+                        self.receiveAll(connection: connection, maximumBytes: self.rpcReplyMaxBytes) { data in
+                            Task { @MainActor in
+                                guard let data,
+                                      let resp = try? self.decodeRPCResponse(from: data) else {
+                                    continuation.resume(throwing: NSError(domain: "ClusterRPC", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid response"]))
+                                    connection.cancel()
+                                    return
+                                }
+                                continuation.resume(returning: resp)
+                                connection.cancel()
+                            }
+                        }
+                    })
+                case .failed(let err):
                     continuation.resume(throwing: err)
                     connection.cancel()
+                case .cancelled:
+                    continuation.resume(throwing: NSError(domain: "ClusterRPC", code: 6, userInfo: [NSLocalizedDescriptionKey: "Connection cancelled"]))
+                default:
+                    break
                 }
             }
             connection.start(queue: .global(qos: .utility))
-            connection.send(content: out, completion: .contentProcessed { _ in
-                self.receiveAll(connection: connection, maximumBytes: self.rpcReplyMaxBytes) { data in
-                    Task { @MainActor in
-                        guard let data,
-                              let replyEnv = try? JSONDecoder().decode(Envelope.self, from: data),
-                              let sealed = try? ChaChaPoly.SealedBox(combined: replyEnv.sealedBoxCombined),
-                              let replyKey = WireGuardManager.shared.deriveClusterSymmetricKey(peerPublicKeyBase64: node.publicKey),
-                              let decrypted = try? ChaChaPoly.open(sealed, using: replyKey),
-                              let resp = try? self.decodeRPCResponse(from: decrypted) else {
-                            continuation.resume(throwing: NSError(domain: "ClusterRPC", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid response"]))
-                            connection.cancel()
-                            return
-                        }
-                        continuation.resume(returning: resp)
-                        connection.cancel()
-                    }
-                }
-            })
         }
     }
 

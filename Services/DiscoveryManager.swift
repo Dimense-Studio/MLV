@@ -25,6 +25,7 @@ final class DiscoveryManager {
         let endpointHost: String
         let endpointPort: Int
         let requestedAt: Date
+        var interfaceType: HostResources.NetworkInterface.InterfaceType?
     }
 
     struct DiscoveredHost: Identifiable, Hashable {
@@ -36,6 +37,11 @@ final class DiscoveryManager {
         let endpointPort: Int
         let addressCIDR: String
         let lastSeen: Date
+        var interfaceType: HostResources.NetworkInterface.InterfaceType?
+        var isPaired: Bool = false
+        var cpuCount: Int = 0
+        var memoryGB: Int = 0
+        var freeDiskGB: Int = 0
     }
     
     static let shared = DiscoveryManager()
@@ -53,11 +59,14 @@ final class DiscoveryManager {
     private var approvedRequesterIDs: Set<String> = []
     
     var onUpdate: (([DiscoveredHost]) -> Void)?
-
     var discovered: [DiscoveredHost] = []
     var pairStatusByID: [String: String] = [:]
     var incomingPairRequests: [IncomingPairRequest] = []
-
+    
+    // Auto-pairing state
+    var autoPairingEnabled: Bool = true
+    private var autoPairTask: Task<Void, Never>?
+    
     private init() {}
 
     func start(myInfo: WireGuardManager.HostInfo) {
@@ -69,10 +78,17 @@ final class DiscoveryManager {
         myID = myInfo.id
         startListener(myInfo: myInfo)
         startBrowser()
+        
+        // Start auto-pairing task
+        if autoPairingEnabled {
+            startAutoPairing()
+        }
     }
 
     func stop() {
         isRunning = false
+        autoPairTask?.cancel()
+        autoPairTask = nil
         listener?.cancel()
         listener = nil
         browser?.cancel()
@@ -80,6 +96,99 @@ final class DiscoveryManager {
         discovered = []
         incomingPairRequests = []
         pendingRequesterInfoByID = [:]
+    }
+
+    /// Enable or disable auto-pairing
+    func setAutoPairing(enabled: Bool) {
+        autoPairingEnabled = enabled
+        if enabled && isRunning && autoPairTask == nil {
+            startAutoPairing()
+        } else if !enabled {
+            autoPairTask?.cancel()
+            autoPairTask = nil
+        }
+    }
+
+    private func startAutoPairing() {
+        autoPairTask?.cancel()
+        autoPairTask = Task { [weak self] in
+            guard let self else { return }
+            // Wait a bit for initial discovery
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            
+            while !Task.isCancelled && self.isRunning {
+                await self.attemptAutoPairing()
+                // Check every 10 seconds
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+        }
+    }
+
+    /// Attempt to auto-pair with discovered hosts using priority: Thunderbolt > Ethernet > WiFi
+    private func attemptAutoPairing() async {
+        let undiscovered = discovered.filter { host in
+            // Skip if already paired
+            guard let peer = WireGuardManager.shared.peers.first(where: { $0.id == host.id }) else {
+                return true // Not paired yet
+            }
+            return false
+        }
+        
+        guard !undiscovered.isEmpty else { return }
+        
+        // Sort by interface type priority (Thunderbolt > Ethernet > WiFi)
+        let sorted = undiscovered.sorted { a, b in
+            let priorityA = interfacePriority(a.interfaceType)
+            let priorityB = interfacePriority(b.interfaceType)
+            if priorityA != priorityB {
+                return priorityA < priorityB
+            }
+            return a.name < b.name
+        }
+        
+        for host in sorted {
+            guard !Task.isCancelled else { break }
+            guard let existing = discovered.first(where: { $0.id == host.id }),
+                  !WireGuardManager.shared.peers.contains(where: { $0.id == host.id }) else {
+                continue
+            }
+            
+            // Auto-approve and pair
+            await MainActor.run {
+                self.pairStatusByID[host.id] = "Auto-pairing..."
+            }
+            
+            let semaphore = DispatchSemaphore(value: 0)
+            var paired = false
+            
+            WireGuardManager.shared.pair(discovered: existing) { success, _ in
+                paired = success
+                semaphore.signal()
+            }
+            
+            _ = semaphore.wait(timeout: .now() + 15)
+            
+            if paired {
+                await MainActor.run {
+                    self.pairStatusByID[host.id] = "Paired (auto)"
+                    AppNotifications.shared.notify(
+                        id: "auto-pair-\(host.id)",
+                        title: "Device Auto-Paired",
+                        body: "\(host.name) was automatically paired via \(String(describing: host.interfaceType ?? .unknown))"
+                    )
+                }
+            }
+        }
+    }
+
+    private func interfacePriority(_ type: HostResources.NetworkInterface.InterfaceType?) -> Int {
+        guard let type else { return 3 }
+        switch type {
+        case .thunderbolt: return 0
+        case .ethernet: return 1
+        case .wifi: return 2
+        case .unknown: return 3
+        }
     }
 
     private func startListener(myInfo: WireGuardManager.HostInfo) {
@@ -97,27 +206,19 @@ final class DiscoveryManager {
 
             listener.newConnectionHandler = { connection in
                 connection.start(queue: .global(qos: .utility))
-                self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (req: DiscoveryRequest) in
-                    Task { @MainActor in
-                        guard Data(base64Encoded: req.nonceBase64) != nil else {
-                            connection.cancel()
-                            return
-                        }
-                        
-                        let requester = req.requesterHostInfo
-                        self.pendingRequesterInfoByID[requester.id] = requester
-                        if let existing = self.incomingPairRequests.firstIndex(where: { $0.id == requester.id }) {
-                            self.incomingPairRequests[existing] = IncomingPairRequest(
-                                id: requester.id,
-                                name: requester.name,
-                                addressCIDR: requester.addressCIDR,
-                                endpointHost: requester.endpointHost,
-                                endpointPort: requester.endpointPort,
-                                requestedAt: Date()
-                            )
-                        } else {
-                            self.incomingPairRequests.append(
-                                IncomingPairRequest(
+                connection.stateUpdateHandler = { state in
+                    guard case .ready = state else { return }
+                    self.receiveJSONLine(connection: connection, maximumBytes: 64 * 1024) { (req: DiscoveryRequest) in
+                        Task { @MainActor in
+                            guard Data(base64Encoded: req.nonceBase64) != nil else {
+                                connection.cancel()
+                                return
+                            }
+                            
+                            let requester = req.requesterHostInfo
+                            self.pendingRequesterInfoByID[requester.id] = requester
+                            if let existing = self.incomingPairRequests.firstIndex(where: { $0.id == requester.id }) {
+                                self.incomingPairRequests[existing] = IncomingPairRequest(
                                     id: requester.id,
                                     name: requester.name,
                                     addressCIDR: requester.addressCIDR,
@@ -125,33 +226,44 @@ final class DiscoveryManager {
                                     endpointPort: requester.endpointPort,
                                     requestedAt: Date()
                                 )
-                            )
-                        }
-
-                        if self.approvedRequesterIDs.contains(requester.id) {
-                            WireGuardManager.shared.addOrUpdatePeer(from: requester)
-
-                            let resp = DiscoveryResponse(
-                                status: "approved",
-                                hostInfo: myInfo,
-                                nonceBase64: req.nonceBase64,
-                                signatureBase64: nil,
-                                message: nil
-                            )
-                            self.sendJSONLine(connection: connection, value: resp) {
-                                connection.cancel()
+                            } else {
+                                self.incomingPairRequests.append(
+                                    IncomingPairRequest(
+                                        id: requester.id,
+                                        name: requester.name,
+                                        addressCIDR: requester.addressCIDR,
+                                        endpointHost: requester.endpointHost,
+                                        endpointPort: requester.endpointPort,
+                                        requestedAt: Date()
+                                    )
+                                )
                             }
-                        } else {
-                            self.pairStatusByID[requester.id] = "Awaiting your approval"
-                            let resp = DiscoveryResponse(
-                                status: "pending",
-                                hostInfo: nil,
-                                nonceBase64: req.nonceBase64,
-                                signatureBase64: nil,
-                                message: "Waiting for approval on \(myInfo.name)"
-                            )
-                            self.sendJSONLine(connection: connection, value: resp) {
-                                connection.cancel()
+
+                            if self.approvedRequesterIDs.contains(requester.id) {
+                                WireGuardManager.shared.addOrUpdatePeer(from: requester)
+
+                                let resp = DiscoveryResponse(
+                                    status: "approved",
+                                    hostInfo: myInfo,
+                                    nonceBase64: req.nonceBase64,
+                                    signatureBase64: nil,
+                                    message: nil
+                                )
+                                self.sendJSONLine(connection: connection, value: resp) {
+                                    connection.cancel()
+                                }
+                            } else {
+                                self.pairStatusByID[requester.id] = "Awaiting your approval"
+                                let resp = DiscoveryResponse(
+                                    status: "pending",
+                                    hostInfo: nil,
+                                    nonceBase64: req.nonceBase64,
+                                    signatureBase64: nil,
+                                    message: "Waiting for approval on \(myInfo.name)"
+                                )
+                                self.sendJSONLine(connection: connection, value: resp) {
+                                    connection.cancel()
+                                }
                             }
                         }
                     }
@@ -189,16 +301,25 @@ final class DiscoveryManager {
                 guard case let .service(name, _, _, _) = result.endpoint else { continue }
                 let id = name
                 if let myID = self.myID, id == myID { continue }
+
+                // Try to resolve the endpoint to get IP and interface info
+                let resolvedHost = self.resolveEndpoint(result.endpoint)
+                
+                // Determine interface type from the resolved IP
+                let ifaceType = resolvedHost.ip.flatMap { self.interfaceTypeForIP($0) }
+
                 next.append(
                     DiscoveredHost(
                         id: id,
                         name: name,
                         endpoint: result.endpoint,
                         publicKey: "",
-                        endpointHost: "",
-                        endpointPort: 0,
-                        addressCIDR: "",
-                        lastSeen: Date()
+                        endpointHost: resolvedHost.ip ?? "",
+                        endpointPort: resolvedHost.port ?? 0,
+                        addressCIDR: resolvedHost.ip.map { $0 + "/32" } ?? "",
+                        lastSeen: Date(),
+                        interfaceType: ifaceType,
+                        isPaired: WireGuardManager.shared.peers.contains { $0.id == id }
                     )
                 )
             }
@@ -223,28 +344,81 @@ final class DiscoveryManager {
         self.browser = browser
     }
 
+    private func resolveEndpoint(_ endpoint: NWEndpoint) -> (ip: String?, port: Int?) {
+        // Try to extract IP from the endpoint
+        switch endpoint {
+        case .hostPort(let host, let port):
+            let ip = Self.hostString(from: host)
+            return (ip, Int(port.rawValue))
+        case .service:
+            return (nil, nil)
+        @unknown default:
+            return (nil, nil)
+        }
+    }
+
+    private func resolveBestEndpoint(for host: DiscoveredHost) -> NWEndpoint {
+        if !host.endpointHost.isEmpty, host.endpointPort > 0,
+           let port = NWEndpoint.Port(rawValue: UInt16(host.endpointPort)) {
+            return .hostPort(host: .init(host.endpointHost), port: port)
+        }
+        return host.endpoint
+    }
+
+    private func interfaceTypeForIP(_ ip: String) -> HostResources.NetworkInterface.InterfaceType? {
+        // Determine interface type based on IP address ranges
+        let parts = ip.split(separator: ".")
+        guard parts.count == 4, let first = Int(parts[0]) else { return nil }
+        
+        // Thunderbolt bridges typically use 192.168.100.x or similar private ranges
+        // WiFi and Ethernet can be various ranges
+        // This is a heuristic - proper detection would use routing tables
+        if ip.hasPrefix("192.168.") || ip.hasPrefix("10.") {
+            // Could be any type - check active interfaces
+            let activeInterfaces = HostResources.activeInterfacesWithPriority()
+            for (iface, ipv4) in activeInterfaces {
+                if let ipv4, ipv4.hasPrefix(String(parts[0] + "." + parts[1] + "." + parts[2])) {
+                    return iface.type
+                }
+            }
+        }
+        return nil
+    }
+
     private func mergeDiscovered(_ next: [DiscoveredHost]) {
         let existingByID: [String: DiscoveredHost] = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
         var merged: [DiscoveredHost] = []
         for host in next {
             if let existing = existingByID[host.id] {
+                // Preserve existing peer info and CPU/memory data but update timestamp and endpoint
                 merged.append(
                     DiscoveredHost(
                         id: existing.id,
                         name: host.name,
                         endpoint: host.endpoint,
-                        publicKey: existing.publicKey,
-                        endpointHost: existing.endpointHost,
-                        endpointPort: existing.endpointPort,
-                        addressCIDR: existing.addressCIDR,
-                        lastSeen: Date()
+                        publicKey: existing.publicKey.isEmpty ? host.publicKey : existing.publicKey,
+                        endpointHost: host.endpointHost.isEmpty ? existing.endpointHost : host.endpointHost,
+                        endpointPort: host.endpointPort == 0 ? existing.endpointPort : host.endpointPort,
+                        addressCIDR: host.addressCIDR.isEmpty ? existing.addressCIDR : host.addressCIDR,
+                        lastSeen: Date(),
+                        interfaceType: host.interfaceType ?? existing.interfaceType,
+                        isPaired: existing.isPaired || WireGuardManager.shared.peers.contains { $0.id == host.id },
+                        cpuCount: existing.cpuCount,
+                        memoryGB: existing.memoryGB,
+                        freeDiskGB: existing.freeDiskGB
                     )
                 )
             } else {
                 merged.append(host)
             }
         }
-        discovered = merged.sorted { $0.name < $1.name }
+        discovered = merged.sorted { a, b in
+            // Sort by interface priority first, then by name
+            let priorityA = interfacePriority(a.interfaceType)
+            let priorityB = interfacePriority(b.interfaceType)
+            if priorityA != priorityB { return priorityA < priorityB }
+            return a.name < b.name
+        }
         onUpdate?(discovered)
     }
 
@@ -259,8 +433,11 @@ final class DiscoveryManager {
         inFlightPeerInfoRequests.insert(host.id)
         lastPeerInfoRequestAt[host.id] = now
 
+        // Use priority-based endpoint resolution
+        let targetEndpoint = resolveBestEndpoint(for: host)
         let params = peerInfoClientParameters()
-        let connection = NWConnection(to: host.endpoint, using: params)
+        let connection = NWConnection(to: targetEndpoint, using: params)
+        
         DispatchQueue.main.async {
             self.pairStatusByID[host.id] = "Connecting…"
         }
@@ -372,12 +549,14 @@ final class DiscoveryManager {
                                     advertisedRoutes: remoteInfo.advertisedRoutes,
                                     cpuCount: remoteInfo.cpuCount,
                                     memoryGB: remoteInfo.memoryGB,
-                                    freeDiskGB: remoteInfo.freeDiskGB
+                                    freeDiskGB: remoteInfo.freeDiskGB,
+                                    primaryInterfaceType: remoteInfo.primaryInterfaceType
                                 )
                             } else {
                                 reachableInfo = remoteInfo
                             }
 
+                            // Update discovered host with remote info
                             if let idx = self.discovered.firstIndex(where: { $0.id == host.id }) {
                                 let existing = self.discovered[idx]
                                 self.discovered[idx] = DiscoveredHost(
@@ -388,7 +567,12 @@ final class DiscoveryManager {
                                     endpointHost: reachableInfo.endpointHost,
                                     endpointPort: reachableInfo.endpointPort,
                                     addressCIDR: reachableInfo.addressCIDR,
-                                    lastSeen: Date()
+                                    lastSeen: Date(),
+                                    interfaceType: existing.interfaceType,
+                                    isPaired: true,
+                                    cpuCount: reachableInfo.cpuCount,
+                                    memoryGB: reachableInfo.memoryGB,
+                                    freeDiskGB: reachableInfo.freeDiskGB
                                 )
                                 self.onUpdate?(self.discovered)
                             }
@@ -447,12 +631,24 @@ final class DiscoveryManager {
         incomingPairRequests.removeAll { $0.id == id }
         pairStatusByID[id] = "Approved"
         WireGuardManager.shared.addOrUpdatePeer(from: info)
+        
+        // Notify
+        AppNotifications.shared.notify(
+            id: "pair-approved-\(id)",
+            title: "Pairing Approved",
+            body: "\(info.name) can now share VMs with this device"
+        )
     }
 
     func rejectIncomingPairRequest(id: String) {
         incomingPairRequests.removeAll { $0.id == id }
         pendingRequesterInfoByID[id] = nil
         pairStatusByID[id] = "Rejected"
+    }
+
+    /// Get the interface type for a discovered host by its ID
+    func interfaceTypeForHost(id: String) -> HostResources.NetworkInterface.InterfaceType? {
+        discovered.first(where: { $0.id == id })?.interfaceType
     }
 
     private func sendJSONLine<T: Encodable>(connection: NWConnection, value: T, completion: @escaping () -> Void) {
@@ -534,6 +730,14 @@ final class DiscoveryManager {
         default:
             return nil
         }
+    }
+
+    private static func hostString(from host: NWEndpoint.Host) -> String {
+        let raw = host.debugDescription
+        if raw.hasPrefix("[") && raw.hasSuffix("]") {
+            return String(raw.dropFirst().dropLast())
+        }
+        return raw
     }
 
     /// Client-side peer-info requests allow peer-to-peer transport so

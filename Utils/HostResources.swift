@@ -93,12 +93,26 @@ struct HostResources {
         var interfaces: [NetworkInterface] = byName.keys.sorted().map { bsd in
             let type: NetworkInterface.InterfaceType
             let name: String
-            if bsd.hasPrefix("en") {
-                type = bsd == "en0" ? .wifi : .ethernet
-                name = bsd == "en0" ? "Wi-Fi" : "Ethernet (\(bsd))"
-            } else if bsd.hasPrefix("bridge") {
-                type = .thunderbolt
-                name = "Bridge (\(bsd))"
+            // Improved detection: check for Thunderbolt bridge via IORegistry or interface name patterns
+            if bsd.hasPrefix("bridge") {
+                // Check if this bridge is a Thunderbolt bridge by looking at its members
+                if isThunderboltBridge(bsdName: bsd) {
+                    type = .thunderbolt
+                    name = "Thunderbolt Bridge (\(bsd))"
+                } else {
+                    type = .ethernet
+                    name = "Bridge (\(bsd))"
+                }
+            } else if bsd.hasPrefix("en") {
+                // en0 is typically WiFi on Macs, but can be Ethernet on some configs
+                // Use SystemConfiguration to determine primary interface type
+                if bsd == "en0", isWiFiInterface(bsdName: bsd) {
+                    type = .wifi
+                    name = "Wi-Fi (\(bsd))"
+                } else {
+                    type = .ethernet
+                    name = "Ethernet (\(bsd))"
+                }
             } else {
                 type = .unknown
                 name = "Interface \(bsd)"
@@ -106,7 +120,7 @@ struct HostResources {
             return NetworkInterface(
                 name: name,
                 type: type,
-                speed: "N/A",
+                speed: detectSpeed(for: bsd),
                 bsdName: bsd,
                 isActive: byName[bsd] ?? false
             )
@@ -120,6 +134,114 @@ struct HostResources {
         }
         interfaces.removeAll { !$0.isActive && $0.type == .unknown }
         return interfaces
+    }
+
+    // MARK: - Interface Detection Helpers
+
+    /// Check if a bridge interface is a Thunderbolt bridge by examining its member interfaces
+    private static func isThunderboltBridge(bsdName: String) -> Bool {
+        // Use sysctl or ifconfig to get bridge member interfaces
+        // For simplicity, check if any member is a Thunderbolt interface
+        // Typically Thunderbolt bridges include interfaces like 'en2' that are Thunderbolt Ethernet
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        process.arguments = [bsdName]
+        process.standardOutput = pipe
+        process.standardError = Pipe() // discard errors
+        try? process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return false }
+        // Look for member interfaces that are likely Thunderbolt (e.g., en interfaces that are not en0/en1)
+        // This is a heuristic; a more robust method would use IOKit
+        if output.contains("member:") {
+            // Check if any member interface is not the primary WiFi/Ethernet
+            let lines = output.components(separatedBy: "\n")
+            for line in lines {
+                if line.contains("member:") {
+                    let parts = line.trimmingCharacters(in: .whitespaces).components(separatedBy: " ")
+                    for part in parts {
+                        if part.hasPrefix("en"), part != "en0", part != "en1" {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// Check if an interface is WiFi using SystemConfiguration
+    private static func isWiFiInterface(bsdName: String) -> Bool {
+        guard let dynamicStore = SCDynamicStoreCreate(nil, "MLV" as CFString, nil, nil) else { return false }
+        let pattern = "State:/Network/Interface/\(bsdName)" as CFString
+        guard let value = SCDynamicStoreCopyValue(dynamicStore, pattern) else { return false }
+        if let dict = value as? [String: Any],
+           let hardware = dict["SCNetworkInterfaceInfo"] as? [String: Any],
+           let type = hardware["SCNetworkInterfaceType"] as? String {
+            return type == "IEEE80211"
+        }
+        return bsdName == "en0" // Fallback: assume en0 is WiFi
+    }
+
+    /// Detect link speed for an interface (best-effort)
+    private static func detectSpeed(for bsdName: String) -> String {
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process.arguments = ["-getMedia", bsdName]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return "N/A" }
+        // Parse for speed like "1000baseT" or "10 Gbit/s"
+        if output.contains("1000baseT") || output.contains("1000BASE-T") {
+            return "1 Gbps"
+        } else if output.contains("10GBase") || output.contains("10 Gbit") {
+            return "10 Gbps"
+        } else if output.contains("100baseTX") {
+            return "100 Mbps"
+        } else if output.contains("autoselect") {
+            return "Auto"
+        }
+        return "N/A"
+    }
+
+    // MARK: - Active Interface with Priority
+
+    /// Returns active interfaces sorted by priority: Thunderbolt > Ethernet > WiFi > unknown
+    static func activeInterfacesWithPriority() -> [(interface: NetworkInterface, ipv4: String?)] {
+        let active = getNetworkInterfaces().filter { $0.isActive }
+        let withIPs = active.map { iface -> (NetworkInterface, String?) in
+            let ip = ipAddress(for: iface.bsdName)
+            return (iface, ip)
+        }
+        return withIPs.sorted { a, b in
+            let priorityA = interfacePriority(iface: a.0)
+            let priorityB = interfacePriority(iface: b.0)
+            if priorityA != priorityB { return priorityA < priorityB }
+            // Secondary sort by name
+            return a.0.bsdName < b.0.bsdName
+        }
+    }
+
+    private static func interfacePriority(iface: NetworkInterface) -> Int {
+        switch iface.type {
+        case .thunderbolt: return 0
+        case .ethernet: return 1
+        case .wifi: return 2
+        case .unknown: return 3
+        }
+    }
+
+    /// Returns the best available interface type and IP based on priority
+    static func bestAvailableInterface() -> (type: NetworkInterface.InterfaceType, bsdName: String, ipv4: String)? {
+        let sorted = activeInterfacesWithPriority()
+        guard let first = sorted.first, let ip = first.1, !ip.isEmpty else { return nil }
+        return (first.0.type, first.0.bsdName, ip)
     }
 
     static func ipAddress(for bsdName: String) -> String? {

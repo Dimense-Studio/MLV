@@ -554,10 +554,18 @@ struct VMRowCompact: View {
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
-                    Text(vm.ipAddress)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(isContainerMode && vm.state.isRunning && vm.ipAddress != "Detecting..." ? .blue.opacity(0.8) : .secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vm.ipAddress)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(isContainerMode && vm.state.isRunning && vm.ipAddress != "Detecting..." ? .blue.opacity(0.8) : .secondary)
+                            .lineLimit(1)
+                        let deviceIP = vm.hostDeviceIP
+                        if !deviceIP.isEmpty, deviceIP != vm.ipAddress {
+                            Text("Host: \(deviceIP)")
+                                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.green.opacity(0.7))
+                        }
+                    }
                     if let pid = vm.hostServicePID {
                         Text("PID \(pid)")
                             .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -692,7 +700,7 @@ struct RemoteVMRow: View {
                 }
 
                 HStack(spacing: 4) {
-                    Text(vm.primaryAddress ?? vm.wgAddress)
+                    Text(vm.primaryAddress ?? vm.wgAddress ?? "No IP")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1687,20 +1695,31 @@ struct NetworkListView: View {
 
     private var topologyNodes: [NetworkTopologyView.TopologyNode] {
         let hostInfo = WireGuardManager.shared.hostInfo
+        // Device IP: use the priority-based IP (e.g. 192.168.2.11), strip /32 suffix
+        let deviceIP = hostInfo.addressCIDR.split(separator: "/").first.map(String.init) ?? "127.0.0.1"
         let local = NetworkTopologyView.TopologyNode(
             id: hostInfo.id,
             name: hostInfo.name,
             kind: .local,
             linkType: localLinkType,
-            ipAddress: hostInfo.addressCIDR.split(separator: "/").first.map(String.init) ?? "127.0.0.1"
+            ipAddress: deviceIP,
+            deviceIP: deviceIP,
+            cpuCount: hostInfo.cpuCount,
+            memoryGB: hostInfo.memoryGB,
+            freeDiskGB: hostInfo.freeDiskGB
         )
-        let peers = pairedPeers.map {
-            NetworkTopologyView.TopologyNode(
-                id: $0.id,
-                name: $0.name,
+        let peers = pairedPeers.map { peer in
+            let discoveredMatch = discoveredHosts.first(where: { $0.id == peer.id })
+            return NetworkTopologyView.TopologyNode(
+                id: peer.id,
+                name: peer.name,
                 kind: .paired,
-                linkType: linkType(forEndpointHost: $0.endpointHost),
-                ipAddress: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
+                linkType: linkType(forEndpointHost: peer.endpointHost),
+                ipAddress: peer.addressCIDR.split(separator: "/").first.map(String.init) ?? "",
+                deviceIP: peer.addressCIDR.split(separator: "/").first.map(String.init) ?? "",
+                cpuCount: discoveredMatch?.cpuCount ?? 0,
+                memoryGB: discoveredMatch?.memoryGB ?? 0,
+                freeDiskGB: discoveredMatch?.freeDiskGB ?? 0
             )
         }
         let discovered = discoveredHosts.map {
@@ -1709,7 +1728,8 @@ struct NetworkListView: View {
                 name: $0.name,
                 kind: .discovered,
                 linkType: linkType(forEndpointHost: $0.endpointHost),
-                ipAddress: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
+                ipAddress: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? "",
+                deviceIP: $0.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
             )
         }
         return [local] + peers + discovered

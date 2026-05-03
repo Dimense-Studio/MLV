@@ -13,10 +13,7 @@ public final class VMManager {
     private let logger = Logger(subsystem: "dimense.net.MLV", category: "VMManager")
     var virtualMachines: [VirtualMachine] = []
     
-    private var wgControlForwarders: [UUID: UDPPortForwarder] = [:]
-    private var wgDataForwarders: [UUID: UDPPortForwarder] = [:]
     private var terminalConsoleServers: [UUID: VMTerminalConsoleServer] = [:]
-    private var wgForwarderTargetIP: [UUID: String] = [:]
     private var serialReadPipes: [UUID: Pipe] = [:]
     private let serialWriteQueue = DispatchQueue(label: "dimense.net.MLV.serial-write", qos: .utility)
     private var pendingPollWrites: Set<UUID> = []
@@ -134,16 +131,6 @@ public final class VMManager {
                 vm.isInstalled = true
             }
             vm.clusterRole = VMClusterRole(rawValue: meta.clusterRole ?? VMClusterRole.node.rawValue) ?? .node
-            vm.wgControlPrivateKeyBase64 = meta.wgControlPrivateKeyBase64
-            vm.wgControlPublicKeyBase64 = meta.wgControlPublicKeyBase64
-            vm.wgControlAddressCIDR = meta.wgControlAddressCIDR
-            vm.wgControlListenPort = meta.wgControlListenPort ?? vm.wgControlListenPort
-            vm.wgControlHostForwardPort = meta.wgControlHostForwardPort ?? vm.wgControlHostForwardPort
-            vm.wgDataPrivateKeyBase64 = meta.wgDataPrivateKeyBase64
-            vm.wgDataPublicKeyBase64 = meta.wgDataPublicKeyBase64
-            vm.wgDataAddressCIDR = meta.wgDataAddressCIDR
-            vm.wgDataListenPort = meta.wgDataListenPort ?? vm.wgDataListenPort
-            vm.wgDataHostForwardPort = meta.wgDataHostForwardPort ?? vm.wgDataHostForwardPort
             vm.autoStartOnLaunch = meta.autoStartOnLaunch ?? false
             vm.containerImageReference = meta.containerImageReference ?? ""
             vm.containerMounts = meta.containerMounts ?? []
@@ -506,27 +493,7 @@ public final class VMManager {
             vm.isContainerWorkload = false
         }
         
-        let (controlPorts, dataPorts) = VMNetworkService.shared.allocateWireGuardPorts(for: vm.id)
-        vm.wgControlListenPort = 51820
-        vm.wgDataListenPort = 51821
-        vm.wgControlHostForwardPort = controlPorts
-        vm.wgDataHostForwardPort = dataPorts
         vm.terminalConsoleHostPort = 20000 + (Int(vm.id.uuidString.suffix(4), radix: 16) ?? Int.random(in: 0...9999)) % 20000
-        
-        if vm.wgControlPrivateKeyBase64 == nil || vm.wgControlPublicKeyBase64 == nil {
-            let kp = WireGuardKeyUtils.generateKeypairBase64()
-            vm.wgControlPrivateKeyBase64 = kp.privateKey
-            vm.wgControlPublicKeyBase64 = kp.publicKey
-        }
-        if vm.wgDataPrivateKeyBase64 == nil || vm.wgDataPublicKeyBase64 == nil {
-            let kp = WireGuardKeyUtils.generateKeypairBase64()
-            vm.wgDataPrivateKeyBase64 = kp.privateKey
-            vm.wgDataPublicKeyBase64 = kp.publicKey
-        }
-        
-        let octet = VMNetworkService.shared.allocateWireGuardOctet(for: vm.id, preferred: isMaster ? 1 : nil)
-        vm.wgControlAddressCIDR = "10.13.0.\(octet)/24"
-        vm.wgDataAddressCIDR = "10.13.1.\(octet)/24"
         
         self.virtualMachines.append(vm)
         VMStatePersistence.shared.saveVMs(self.virtualMachines)
@@ -539,20 +506,6 @@ public final class VMManager {
         return vm
     }
 
-    private func allocateWireGuardPorts(for id: UUID) -> (Int, Int) {
-        let suffix = Int(id.uuidString.suffix(4), radix: 16) ?? Int.random(in: 0...9999)
-        let control = 30000 + (suffix % 10000)
-        let data = 40000 + (suffix % 10000)
-        return (control, data)
-    }
-    
-    private func allocateWireGuardOctet(for id: UUID, preferred: Int?) -> Int {
-        if let preferred { return preferred }
-        let suffix = Int(id.uuidString.suffix(2), radix: 16) ?? Int.random(in: 10...250)
-        let octet = (suffix % 220) + 10
-        return octet
-    }
-    
     func startVM(_ vm: VirtualMachine) async throws {
         try await VMLifecycleManager.shared.performOperation(for: vm.id) {
             try await self._startVMInternal(vm)
@@ -798,7 +751,6 @@ public final class VMManager {
         if lines.count >= 3 {
             vm.gateway = lines[1]
             vm.dns = lines[2].components(separatedBy: " ")
-            ensureWireGuardForwarders(for: vm)
         }
     }
 
@@ -1083,7 +1035,6 @@ public final class VMManager {
                             if vm.ipAddress != ip {
                                 vm.ipAddress = ip
                                 vm.isConnected = true
-                                self.ensureWireGuardForwarders(for: vm)
                             }
                         }
                     }
@@ -1106,12 +1057,14 @@ public final class VMManager {
         if vm.networkMode == .nat, ip.hasPrefix("192.168.64.") {
             vm.gateway = "192.168.64.1"
             vm.connectionType = "NAT (Virtualization.framework)"
+            // For NAT mode, also store the host device IP for display
+            vm.hostDeviceIP = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? ""
         } else {
             vm.connectionType = "Bridged (\(vm.bridgeInterfaceName ?? "auto"))"
+            // For bridge mode, the VM IP is on the LAN - also store host device IP
+            vm.hostDeviceIP = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? ""
         }
         vm.isConnected = true
-        ensureWireGuardForwarders(for: vm)
-
         // Trigger Talos auto-setup for Talos VMs when IP changes
         if vm.selectedDistro == .talos {
             TalosAutoSetupService.shared.resetSetup(for: vm.id)
@@ -1339,55 +1292,6 @@ public final class VMManager {
         return String(data: data, encoding: .utf8)
     }
 
-    private func ensureWireGuardForwarders(for vm: VirtualMachine) {
-        guard vm.networkMode == .nat else {
-            if let existing = wgControlForwarders[vm.id] {
-                existing.stop()
-                wgControlForwarders[vm.id] = nil
-            }
-            if let existing = wgDataForwarders[vm.id] {
-                existing.stop()
-                wgDataForwarders[vm.id] = nil
-            }
-            wgForwarderTargetIP[vm.id] = nil
-            return
-        }
-
-        let guestIP = vm.ipAddress
-        if guestIP == "Detecting..." || guestIP.isEmpty { return }
-
-        if let last = wgForwarderTargetIP[vm.id], last != guestIP {
-            wgControlForwarders[vm.id]?.stop()
-            wgControlForwarders[vm.id] = nil
-            wgDataForwarders[vm.id]?.stop()
-            wgDataForwarders[vm.id] = nil
-        }
-
-        if vm.wgControlHostForwardPort > 0, wgControlForwarders[vm.id] == nil {
-            do {
-                let fwd = try UDPPortForwarder(listenPort: vm.wgControlHostForwardPort, targetIP: guestIP, targetPort: vm.wgControlListenPort)
-                try fwd.start()
-                wgControlForwarders[vm.id] = fwd
-                wgForwarderTargetIP[vm.id] = guestIP
-                vm.addLog("WireGuard control UDP forwarder active on host port \(vm.wgControlHostForwardPort).")
-            } catch {
-                vm.addLog("Failed to start WG control UDP forwarder: \(error.localizedDescription)", isError: true)
-            }
-        }
-
-        if vm.wgDataHostForwardPort > 0, wgDataForwarders[vm.id] == nil {
-            do {
-                let fwd = try UDPPortForwarder(listenPort: vm.wgDataHostForwardPort, targetIP: guestIP, targetPort: vm.wgDataListenPort)
-                try fwd.start()
-                wgDataForwarders[vm.id] = fwd
-                wgForwarderTargetIP[vm.id] = guestIP
-                vm.addLog("WireGuard data UDP forwarder active on host port \(vm.wgDataHostForwardPort).")
-            } catch {
-                vm.addLog("Failed to start WG data UDP forwarder: \(error.localizedDescription)", isError: true)
-            }
-        }
-    }
-
     private func saveBookmark(for url: URL) {
         let didStartAccess = url.startAccessingSecurityScopedResource()
         defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
@@ -1572,7 +1476,6 @@ public final class VMManager {
         vm.lastMonitoredProcessTicks = nil
         vm.lastHealthyPoll = nil
         vm.isConnected = false
-        wgForwarderTargetIP[vm.id] = nil
         if let pid = vm.hostServicePID {
             assignedHostServicePIDs.remove(Int32(pid))
             vm.hostServicePID = nil
@@ -1608,13 +1511,8 @@ public final class VMManager {
         vm.serialWritePipe = nil
         vm.vzVirtualMachine = nil
         vm.vzDelegate = nil
-        wgControlForwarders[vm.id]?.stop()
-        wgControlForwarders[vm.id] = nil
-        wgDataForwarders[vm.id]?.stop()
-        wgDataForwarders[vm.id] = nil
         terminalConsoleServers[vm.id]?.stop()
         terminalConsoleServers[vm.id] = nil
-        wgForwarderTargetIP[vm.id] = nil
         restartingVMs.remove(vm.id)
         refreshBackgroundExecution()
 
@@ -1643,6 +1541,18 @@ public final class VMManager {
             virtualMachines.removeAll { $0.id == vm.id }
             VMStatePersistence.shared.saveVMs(self.virtualMachines)
         }
+    }
+
+    // MARK: - RPC Compatibility
+
+    func deleteVM(_ vm: VirtualMachine) async throws {
+        try await stopVM(vm)
+        if useAppleContainerRuntime {
+            try? AppleContainerService.shared.deleteWorkload(name: containerName(for: vm))
+        }
+        VMStorageManager.shared.cleanupVMDirectory(for: vm.id)
+        virtualMachines.removeAll { $0.id == vm.id }
+        VMStatePersistence.shared.saveVMs(self.virtualMachines)
     }
 
 

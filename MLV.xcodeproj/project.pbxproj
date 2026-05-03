@@ -55,6 +55,13 @@
 		302DCF762F915093006623A6 /* TalosPodMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302DCF742F915093006623A6 /* TalosPodMonitor.swift */; };
 		302DCF772F915093006623A7 /* NetworkTopologyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302DCF752F915093006623A7 /* NetworkTopologyMonitor.swift */; };
 		C0FFEE0D0000000000000002 /* WireGuardAndClusterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0D0000000000000001 /* WireGuardAndClusterTests.swift */; };
+		7A4AE0C18F3645F6AE1A4BF6 /* ClusterConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A828C177DB2D4EC3824CE74C /* ClusterConfiguration.swift */; };
+		AAE5E0AC363749FC8E5494F0 /* NetworkManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 755CFE56E00F4C5B8D4793F5 /* NetworkManager.swift */; };
+		61DF6EF2BE644FD7AEC2C8DB /* ClusterController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6DC510E773F4DF4B4B6DB35 /* ClusterController.swift */; };
+		A0C551BBA6A24E8FAA411EBD /* ClusterDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2262F9065C34402DB04BDE4F /* ClusterDiscovery.swift */; };
+		B54DBB47CDB34ECFBA171FE8 /* ClusterNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA60DE589AC45C19B520B7D /* ClusterNode.swift */; };
+		D10B6A4988024418B2C0CDE6 /* RoleSelectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A8A77EA64254D7DA0F3C511 /* RoleSelectionView.swift */; };
+		D9D298F1030644D3A2C467DA /* ClusterDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6117AECA9A7446A82673157 /* ClusterDashboardView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -177,7 +184,9 @@
 				300405A72F80002A00E27D05 /* OverlayTheme.swift */,
 				302DCF712F9150C7006623A4 /* TalosSetupView.swift */,
 				300405B32F80000000E27D05 /* VisualEffectView.swift */,
-			);
+		9A8A77EA64254D7DA0F3C511 /* RoleSelectionView.swift */,
+		A6117AECA9A7446A82673157 /* ClusterDashboardView.swift */,
+		);
 			path = Views;
 			sourceTree = "<group>";
 		};
@@ -216,7 +225,11 @@
 				302DCF742F915093006623A6 /* TalosPodMonitor.swift */,
 				302DCF752F915093006623A7 /* NetworkTopologyMonitor.swift */,
 				3004059D2F7FD45300E27D05 /* VMManaging.swift */,
-			);
+		A828C177DB2D4EC3824CE74C /* ClusterConfiguration.swift */,
+		755CFE56E00F4C5B8D4793F5 /* NetworkManager.swift */,
+		E6DC510E773F4DF4B4B6DB35 /* ClusterController.swift */,
+		2262F9065C34402DB04BDE4F /* ClusterDiscovery.swift */,
+		);
 			path = Services;
 			sourceTree = "<group>";
 		};
@@ -226,7 +239,8 @@
 				3004055B2F7F2B4800E27D05 /* Item.swift */,
 				300405632F7F2B4800E27D05 /* VirtualMachine.swift */,
 				300405AF2F80000000E27D05 /* VMError.swift */,
-			);
+		DCA60DE589AC45C19B520B7D /* ClusterNode.swift */,
+		);
 			path = Models;
 			sourceTree = "<group>";
 		};
@@ -411,7 +425,14 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
+			7A4AE0C18F3645F6AE1A4BF6 /* ClusterConfiguration.swift in Sources */,
+			AAE5E0AC363749FC8E5494F0 /* NetworkManager.swift in Sources */,
+			61DF6EF2BE644FD7AEC2C8DB /* ClusterController.swift in Sources */,
+			A0C551BBA6A24E8FAA411EBD /* ClusterDiscovery.swift in Sources */,
+			B54DBB47CDB34ECFBA171FE8 /* ClusterNode.swift in Sources */,
+			D10B6A4988024418B2C0CDE6 /* RoleSelectionView.swift in Sources */,
+			D9D298F1030644D3A2C467DA /* ClusterDashboardView.swift in Sources */,
+		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		30D4DAAF2F7578FA003C3565 /* Resources */ = {

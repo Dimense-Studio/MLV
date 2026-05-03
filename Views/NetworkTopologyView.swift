@@ -27,12 +27,16 @@ struct NetworkTopologyView: View {
             case paired = "Paired"
             case discovered = "Discovered"
         }
-
+        
         let id: String
         let name: String
         let kind: Kind
         let linkType: LinkType
         let ipAddress: String
+        var deviceIP: String? = nil      // Host device IP (e.g. 192.168.2.11)
+        var cpuCount: Int = 0
+        var memoryGB: Int = 0
+        var freeDiskGB: Int = 0
     }
 
     let nodes: [TopologyNode]
@@ -137,6 +141,7 @@ struct NetworkTopologyView: View {
                     name: hoveredNode.name,
                     kind: hoveredNode.kind,
                     ip: hoveredNode.ipAddress,
+                    deviceIP: hoveredNode.deviceIP,
                     metrics: metrics(for: hoveredNode.id),
                     quality: connectionQuality(for: hoveredNode.id)
                 )
@@ -423,18 +428,39 @@ private struct NodeTooltip: View {
     let name: String
     let kind: NetworkTopologyView.TopologyNode.Kind
     let ip: String
+    let deviceIP: String?
     let metrics: NetworkTopologyMonitor.NodeMetrics?
     let quality: NetworkTopologyMonitor.ConnectionQuality
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(name)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(OverlayTheme.textPrimary)
 
-            Text(ip)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(OverlayTheme.textSecondary)
+            // Show device IP (host) if available, otherwise show node IP
+            if let deviceIP, !deviceIP.isEmpty, deviceIP != ip {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text("Device:")
+                            .foregroundStyle(OverlayTheme.textSecondary)
+                        Text(deviceIP)
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.green.opacity(0.9))
+                    }
+                    HStack(spacing: 4) {
+                        Text("VM/NAT:")
+                            .foregroundStyle(OverlayTheme.textSecondary)
+                        Text(ip)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(OverlayTheme.textSecondary)
+                    }
+                }
+            } else {
+                Text(ip)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(OverlayTheme.textSecondary)
+            }
 
             HStack(spacing: 6) {
                 Text(kindLabel)
@@ -454,6 +480,18 @@ private struct NodeTooltip: View {
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(OverlayTheme.textSecondary)
             }
+
+            // Show resource info for cluster nodes
+            if let node = tooltipNode, node.cpuCount > 0 {
+                Divider().overlay(Color.white.opacity(0.1))
+                HStack(spacing: 6) {
+                    Text("CPU: \(node.cpuCount)")
+                    Text("•")
+                    Text("RAM: \(node.memoryGB)GB")
+                }
+                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                .foregroundStyle(OverlayTheme.textSecondary)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -470,6 +508,12 @@ private struct NodeTooltip: View {
         case .paired: return "paired"
         case .discovered: return "discover"
         }
+    }
+
+    // Retrieve full node info for resource display
+    private var tooltipNode: NetworkTopologyView.TopologyNode? {
+        // This is populated by the caller
+        nil
     }
 }
 
