@@ -40,12 +40,15 @@ final class VMListViewModel {
         let averageMemoryUsage = sampledMemory.isEmpty ? 0 : sampledMemory.reduce(0, +) / sampledMemory.count
         let allOperational = !all.isEmpty && runningCount == all.count
 
-        // Remote VMs from paired nodes
-        let remoteVMs = ClusterManager.shared.clusterVMs
+        // Remote VMs from paired nodes (exclude local node entries)
+        let localNodeID = WireGuardManager.shared.hostInfo.id
+        let remoteVMs = ClusterManager.shared.clusterVMs.filter { $0.nodeID != localNodeID }
         let filteredRemoteVMs = remoteVMs.filter {
             search.isEmpty ? true : $0.name.localizedCaseInsensitiveContains(search)
         }
-        let pairedNodeCount = ClusterManager.shared.nodes.count
+        // "Paired" should reflect currently discovered peers, not stale cached peers.
+        let discoveredIDs = Set(DiscoveryManager.shared.discovered.map(\.id))
+        let pairedNodeCount = WireGuardManager.shared.peers.filter { discoveredIDs.contains($0.id) }.count
 
         return VMListSnapshot(
             all: all,

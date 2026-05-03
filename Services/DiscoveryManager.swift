@@ -413,7 +413,38 @@ final class DiscoveryManager {
             if priorityA != priorityB { return priorityA < priorityB }
             return a.name < b.name
         }
+        reconcilePairedPeerEndpoints(with: discovered)
         onUpdate?(discovered)
+    }
+
+    private func reconcilePairedPeerEndpoints(with discoveredHosts: [DiscoveredHost]) {
+        let peerByID = Dictionary(uniqueKeysWithValues: WireGuardManager.shared.peers.map { ($0.id, $0) })
+        for host in discoveredHosts {
+            guard let peer = peerByID[host.id] else { continue }
+            let discoveredIP = host.addressCIDR.split(separator: "/").first.map(String.init) ?? ""
+            if host.endpointHost.isEmpty || discoveredIP.isEmpty {
+                continue
+            }
+            let endpointChanged = peer.endpointHost != host.endpointHost || peer.endpointPort != host.endpointPort
+            let addressChanged = peer.addressCIDR != host.addressCIDR
+            if !endpointChanged && !addressChanged {
+                continue
+            }
+            let refreshed = WireGuardManager.HostInfo(
+                id: peer.id,
+                name: host.name,
+                publicKey: peer.publicKey,
+                endpointHost: host.endpointHost,
+                endpointPort: host.endpointPort > 0 ? host.endpointPort : peer.endpointPort,
+                addressCIDR: host.addressCIDR,
+                advertisedRoutes: peer.allowedIPs,
+                cpuCount: host.cpuCount,
+                memoryGB: host.memoryGB,
+                freeDiskGB: host.freeDiskGB,
+                primaryInterfaceType: host.interfaceType
+            )
+            WireGuardManager.shared.addOrUpdatePeer(from: refreshed)
+        }
     }
 
     func requestPeerInfo(_ host: DiscoveredHost, completion: @escaping (WireGuardManager.HostInfo?) -> Void) {
