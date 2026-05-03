@@ -125,57 +125,62 @@ final class DiscoveryManager {
     }
 
     /// Attempt to auto-pair with discovered hosts using priority: Thunderbolt > Ethernet > WiFi
+    /// Also re-pairs existing peers if a better interface becomes available.
     private func attemptAutoPairing() async {
-        let undiscovered = discovered.filter { host in
-            // Skip if already paired
-            guard let peer = WireGuardManager.shared.peers.first(where: { $0.id == host.id }) else {
-                return true // Not paired yet
-            }
-            return false
-        }
+        guard !discovered.isEmpty else { return }
         
-        guard !undiscovered.isEmpty else { return }
-        
-        // Sort by interface type priority (Thunderbolt > Ethernet > WiFi)
-        let sorted = undiscovered.sorted { a, b in
-            let priorityA = interfacePriority(a.interfaceType)
-            let priorityB = interfacePriority(b.interfaceType)
-            if priorityA != priorityB {
-                return priorityA < priorityB
-            }
-            return a.name < b.name
-        }
-        
-        for host in sorted {
+        // Check all discovered hosts - both unpaired and already-paired
+        for host in discovered {
             guard !Task.isCancelled else { break }
-            guard let existing = discovered.first(where: { $0.id == host.id }),
-                  !WireGuardManager.shared.peers.contains(where: { $0.id == host.id }) else {
+            
+            let existingPeer = WireGuardManager.shared.peers.first(where: { $0.id == host.id })
+            let isPaired = existingPeer != nil
+            
+            // Skip if paired and interface type hasn't improved
+            if isPaired, let peer = existingPeer {
+                let currentPriority = interfacePriority(host.interfaceType)
+                let peerIP = peer.endpointHost
+                let peerInterfaceType = interfaceTypeForIP(peerIP)
+                let peerPriority = interfacePriority(peerInterfaceType)
+                
+                // If current connection is already better or equal, skip
+                if peerPriority <= currentPriority {
+                    continue
+                }
+                
+                // Better interface found - re-pair
+                await MainActor.run {
+                    self.pairStatusByID[host.id] = "Upgrading connection..."
+                }
+            }
+            
+            guard let discoveredHost = discovered.first(where: { $0.id == host.id }) else { continue }
+            
+            // Skip if already paired via this exact endpoint
+            if isPaired, let peer = existingPeer,
+               peer.endpointHost == discoveredHost.endpointHost,
+               peer.endpointPort == discoveredHost.endpointPort {
                 continue
             }
             
-            // Auto-approve and pair
             await MainActor.run {
-                self.pairStatusByID[host.id] = "Auto-pairing..."
+                self.pairStatusByID[host.id] = isPaired ? "Switching to better interface..." : "Auto-pairing..."
             }
             
-            let semaphore = DispatchSemaphore(value: 0)
-            var paired = false
-            
-            WireGuardManager.shared.pair(discovered: existing) { success, _ in
-                paired = success
-                semaphore.signal()
-            }
-            
-            _ = semaphore.wait(timeout: .now() + 15)
-            
-            if paired {
-                await MainActor.run {
-                    self.pairStatusByID[host.id] = "Paired (auto)"
-                    AppNotifications.shared.notify(
-                        id: "auto-pair-\(host.id)",
-                        title: "Device Auto-Paired",
-                        body: "\(host.name) was automatically paired via \(String(describing: host.interfaceType ?? .unknown))"
-                    )
+            await withCheckedContinuation { continuation in
+                WireGuardManager.shared.pair(discovered: discoveredHost) { success, _ in
+                    if success {
+                        Task { @MainActor in
+                            let interfaceName = String(describing: host.interfaceType ?? .unknown)
+                            self.pairStatusByID[host.id] = isPaired ? "Upgraded to \(interfaceName)" : "Paired (auto)"
+                            AppNotifications.shared.notify(
+                                id: "auto-pair-\(host.id)",
+                                title: isPaired ? "Connection Upgraded" : "Device Auto-Paired",
+                                body: "\(host.name) is now connected via \(interfaceName)"
+                            )
+                        }
+                    }
+                    continuation.resume()
                 }
             }
         }
@@ -352,6 +357,8 @@ final class DiscoveryManager {
             return (ip, Int(port.rawValue))
         case .service:
             return (nil, nil)
+        case .unix(let path):
+            return (path, nil)
         @unknown default:
             return (nil, nil)
         }
@@ -368,7 +375,7 @@ final class DiscoveryManager {
     private func interfaceTypeForIP(_ ip: String) -> HostResources.NetworkInterface.InterfaceType? {
         // Determine interface type based on IP address ranges
         let parts = ip.split(separator: ".")
-        guard parts.count == 4, let first = Int(parts[0]) else { return nil }
+        guard parts.count == 4, let _ = Int(parts[0]) else { return nil }
         
         // Thunderbolt bridges typically use 192.168.100.x or similar private ranges
         // WiFi and Ethernet can be various ranges
@@ -378,6 +385,10 @@ final class DiscoveryManager {
         }
         return nil
     }
+    
+    // MARK: - Notification Names
+    
+    static let peerEndpointUpdated = Notification.Name("DiscoveryManager.peerEndpointUpdated")
 
     private func mergeDiscovered(_ next: [DiscoveredHost]) {
         let existingByID: [String: DiscoveredHost] = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
@@ -427,7 +438,8 @@ final class DiscoveryManager {
             }
             let endpointChanged = peer.endpointHost != host.endpointHost || peer.endpointPort != host.endpointPort
             let addressChanged = peer.addressCIDR != host.addressCIDR
-            if !endpointChanged && !addressChanged {
+            let interfaceChanged = peer.interfaceType != host.interfaceType
+            if !endpointChanged && !addressChanged && !interfaceChanged {
                 continue
             }
             let refreshed = WireGuardManager.HostInfo(
@@ -444,6 +456,15 @@ final class DiscoveryManager {
                 primaryInterfaceType: host.interfaceType
             )
             WireGuardManager.shared.addOrUpdatePeer(from: refreshed)
+            
+            // Notify ClusterManager to re-sync if endpoint or interface changed
+            if endpointChanged || interfaceChanged {
+                NotificationCenter.default.post(
+                    name: Self.peerEndpointUpdated,
+                    object: nil,
+                    userInfo: ["peerID": host.id]
+                )
+            }
         }
     }
 

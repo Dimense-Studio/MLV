@@ -92,6 +92,46 @@ final class WireGuardManager {
         let endpointPort: Int
         let addressCIDR: String
         let allowedIPs: [String]
+        var interfaceType: HostResources.NetworkInterface.InterfaceType?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, publicKey, endpointHost, endpointPort, addressCIDR, allowedIPs, interfaceType
+        }
+
+        init(id: String, name: String, publicKey: String, endpointHost: String, endpointPort: Int, addressCIDR: String, allowedIPs: [String], interfaceType: HostResources.NetworkInterface.InterfaceType? = nil) {
+            self.id = id
+            self.name = name
+            self.publicKey = publicKey
+            self.endpointHost = endpointHost
+            self.endpointPort = endpointPort
+            self.addressCIDR = addressCIDR
+            self.allowedIPs = allowedIPs
+            self.interfaceType = interfaceType
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            publicKey = try container.decode(String.self, forKey: .publicKey)
+            endpointHost = try container.decode(String.self, forKey: .endpointHost)
+            endpointPort = try container.decode(Int.self, forKey: .endpointPort)
+            addressCIDR = try container.decode(String.self, forKey: .addressCIDR)
+            allowedIPs = try container.decode([String].self, forKey: .allowedIPs)
+            interfaceType = try container.decodeIfPresent(HostResources.NetworkInterface.InterfaceType.self, forKey: .interfaceType)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(name, forKey: .name)
+            try container.encode(publicKey, forKey: .publicKey)
+            try container.encode(endpointHost, forKey: .endpointHost)
+            try container.encode(endpointPort, forKey: .endpointPort)
+            try container.encode(addressCIDR, forKey: .addressCIDR)
+            try container.encode(allowedIPs, forKey: .allowedIPs)
+            try container.encodeIfPresent(interfaceType, forKey: .interfaceType)
+        }
     }
 
     static let shared = WireGuardManager()
@@ -197,7 +237,8 @@ final class WireGuardManager {
             endpointHost: info.endpointHost,
             endpointPort: info.endpointPort,
             addressCIDR: info.addressCIDR,
-            allowedIPs: info.advertisedRoutes
+            allowedIPs: info.advertisedRoutes,
+            interfaceType: info.primaryInterfaceType
         )
         
         if let idx = peers.firstIndex(where: { $0.id == info.id }) {

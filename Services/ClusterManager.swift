@@ -115,6 +115,10 @@ final class ClusterManager {
         }
     }
     
+    static let peerEndpointUpdated = Notification.Name("ClusterManager.peerEndpointUpdated")
+    
+    static let autoPairUpgraded = Notification.Name("ClusterManager.autoPairUpgraded")
+    
     private let rpcPort: NWEndpoint.Port = 7124
     private let maxRPCPayloadBytes = 160 * 1024 * 1024
     private let rpcReplyMaxBytes = 4 * 1024 * 1024
@@ -125,6 +129,12 @@ final class ClusterManager {
     var clusterVMs: [GlobalVMInfo] = []
     
     private init() {}
+    
+    @objc private func handlePeerEndpointUpdated() {
+        Task { @MainActor in
+            await self.syncClusterVMs()
+        }
+    }
     
     func start() {
         startListener()
@@ -139,26 +149,46 @@ final class ClusterManager {
         }
         
         // Load existing paired peers into nodes list
+        refreshNodesFromPeers()
         Task { @MainActor in
-            let peers = WireGuardManager.shared.peers
-            self.nodes = peers.map { peer in
-                Node(
-                    id: peer.id,
-                    name: peer.name,
-                    publicKey: peer.publicKey,
-                    endpointHost: peer.endpointHost,
-                    endpointPort: peer.endpointPort,
-                    addressCIDR: peer.addressCIDR,
-                    cpuCount: 0,
-                    memoryGB: 0,
-                    freeDiskGB: 0,
-                    lastSeen: Date()
-                )
-            }
             await self.syncClusterVMs()
         }
         
-        // Periodically sync all VMs in the cluster
+        // Re-sync cluster when a peer's endpoint or interface upgrades
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePeerEndpointUpdated),
+            name: Self.peerEndpointUpdated,
+            object: nil
+        )
+        
+        // Periodic cluster VM sync
+        startPeriodicSync()
+    }
+    
+    // Load existing paired peers into nodes list
+    func refreshNodesFromPeers() {
+        let peers = WireGuardManager.shared.peers
+        self.nodes = peers.map { peer in
+            Node(
+                id: peer.id,
+                name: peer.name,
+                publicKey: peer.publicKey,
+                endpointHost: peer.endpointHost,
+                endpointPort: peer.endpointPort,
+                addressCIDR: peer.addressCIDR,
+                cpuCount: 0,
+                memoryGB: 0,
+                freeDiskGB: 0,
+                lastSeen: Date(),
+                interfaceType: peer.interfaceType,
+                isPaired: true
+            )
+        }
+    }
+    
+    // Periodic cluster VM sync
+    private func startPeriodicSync() {
         Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
             Task { @MainActor in
                 await self.syncClusterVMs()
@@ -190,8 +220,10 @@ final class ClusterManager {
         }
         
         // Build remote targets from paired peers plus discovered nodes.
+        let discoveredByID = Dictionary(uniqueKeysWithValues: DiscoveryManager.shared.discovered.map { ($0.id, $0) })
         let peerNodes = WireGuardManager.shared.peers.map { peer in
-            Node(
+            let discovered = discoveredByID[peer.id]
+            return Node(
                 id: peer.id,
                 name: peer.name,
                 publicKey: peer.publicKey,
@@ -202,11 +234,10 @@ final class ClusterManager {
                 memoryGB: 0,
                 freeDiskGB: 0,
                 lastSeen: Date(),
-                interfaceType: nil,
+                interfaceType: discovered?.interfaceType,
                 isPaired: true
             )
         }
-        let discoveredByID = Dictionary(uniqueKeysWithValues: DiscoveryManager.shared.discovered.map { ($0.id, $0) })
         var byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
         for peerNode in peerNodes {
             let discovered = discoveredByID[peerNode.id]
@@ -247,30 +278,12 @@ final class ClusterManager {
         self.nodes = Array(byID.values)
 
         // Add remote VMs with node info
-        for node in self.nodes {
+        for node in self.nodes where node.isPaired {
             do {
                 let vms = try await listVMsFull(on: node)
-                // Tag VMs with their node info
-                let enriched = vms.map { vm -> GlobalVMInfo in
-                    GlobalVMInfo(
-                        id: vm.id,
-                        nodeID: vm.nodeID,
-                        name: vm.name,
-                        publicKey: vm.publicKey,
-                        wgAddress: vm.wgAddress,
-                        hostEndpoint: vm.hostEndpoint,
-                        hostPort: vm.hostPort,
-                        primaryAddress: vm.primaryAddress,
-                        isMaster: vm.isMaster,
-                        networkInterface: vm.networkInterface,
-                        networkSubnetPrefix: vm.networkSubnetPrefix,
-                        nodeName: node.name,
-                        interfaceType: node.interfaceType
-                    )
-                }
-                allVMs.append(contentsOf: enriched)
+                allVMs.append(contentsOf: vms)
             } catch {
-                // Node unreachable, skip
+                print("[ClusterManager] Failed to fetch VMs from \(node.name): \(error)")
             }
         }
         self.clusterVMs = allVMs
@@ -280,7 +293,25 @@ final class ClusterManager {
         let req = RPCRequest(id: UUID().uuidString, type: "listVMsFull", payload: nil)
         let resp = try await send(req, to: node)
         guard resp.ok, let data = resp.payload else { return [] }
-        return try JSONDecoder().decode([GlobalVMInfo].self, from: data)
+        let remoteVMs = try JSONDecoder().decode([GlobalVMInfo].self, from: data)
+        // Tag with the node name for display
+        return remoteVMs.map { vm in
+            GlobalVMInfo(
+                id: vm.id,
+                nodeID: vm.nodeID,
+                name: vm.name,
+                publicKey: vm.publicKey,
+                wgAddress: vm.wgAddress,
+                hostEndpoint: vm.hostEndpoint,
+                hostPort: vm.hostPort,
+                primaryAddress: vm.primaryAddress,
+                isMaster: vm.isMaster,
+                networkInterface: vm.networkInterface,
+                networkSubnetPrefix: vm.networkSubnetPrefix,
+                nodeName: node.name,
+                interfaceType: node.interfaceType
+            )
+        }
     }
     
     private func refreshNodeInfo(for host: DiscoveryManager.DiscoveredHost) {
@@ -653,13 +684,10 @@ final class ClusterManager {
             let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? self.rpcPort
             let endpoint = NWEndpoint.hostPort(host: .init(host), port: endpointPort)
             let connection = NWConnection(to: endpoint, using: params)
-            var didSend = false
             
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    guard !didSend else { return }
-                    didSend = true
                     connection.send(content: out, completion: .contentProcessed { _ in
                         self.receiveAll(connection: connection, maximumBytes: self.rpcReplyMaxBytes) { data in
                             Task { @MainActor in

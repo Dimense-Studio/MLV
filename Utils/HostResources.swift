@@ -58,7 +58,7 @@ struct HostResources {
         let bsdName: String
         var isActive: Bool = false
         
-        enum InterfaceType: String, CaseIterable {
+        enum InterfaceType: String, CaseIterable, Codable {
             case ethernet = "Ethernet"
             case thunderbolt = "Thunderbolt"
             case wifi = "WiFi"
