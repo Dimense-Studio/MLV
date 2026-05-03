@@ -206,25 +206,42 @@ final class ClusterManager {
                 isPaired: true
             )
         }
+        let discoveredByID = Dictionary(uniqueKeysWithValues: DiscoveryManager.shared.discovered.map { ($0.id, $0) })
         var byID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
         for peerNode in peerNodes {
+            let discovered = discoveredByID[peerNode.id]
+            let resolvedHost = discovered?.endpointHost.isEmpty == false ? (discovered?.endpointHost ?? peerNode.endpointHost) : peerNode.endpointHost
+            let resolvedPort = (discovered?.endpointPort ?? 0) > 0 ? (discovered?.endpointPort ?? peerNode.endpointPort) : peerNode.endpointPort
             if let existing = byID[peerNode.id] {
                 byID[peerNode.id] = Node(
                     id: existing.id,
                     name: existing.name,
                     publicKey: existing.publicKey,
-                    endpointHost: peerNode.endpointHost,
-                    endpointPort: peerNode.endpointPort,
+                    endpointHost: resolvedHost,
+                    endpointPort: resolvedPort,
                     addressCIDR: peerNode.addressCIDR,
                     cpuCount: existing.cpuCount,
                     memoryGB: existing.memoryGB,
                     freeDiskGB: existing.freeDiskGB,
                     lastSeen: existing.lastSeen,
-                    interfaceType: existing.interfaceType,
+                    interfaceType: discovered?.interfaceType ?? existing.interfaceType,
                     isPaired: true
                 )
             } else {
-                byID[peerNode.id] = peerNode
+                byID[peerNode.id] = Node(
+                    id: peerNode.id,
+                    name: peerNode.name,
+                    publicKey: peerNode.publicKey,
+                    endpointHost: resolvedHost,
+                    endpointPort: resolvedPort,
+                    addressCIDR: peerNode.addressCIDR,
+                    cpuCount: peerNode.cpuCount,
+                    memoryGB: peerNode.memoryGB,
+                    freeDiskGB: peerNode.freeDiskGB,
+                    lastSeen: peerNode.lastSeen,
+                    interfaceType: discovered?.interfaceType ?? peerNode.interfaceType,
+                    isPaired: true
+                )
             }
         }
         self.nodes = Array(byID.values)
@@ -607,12 +624,34 @@ final class ClusterManager {
     }
     
     private func send(_ request: RPCRequest, to node: Node) async throws -> RPCResponse {
+        var candidates: [String] = []
+        if !node.endpointHost.isEmpty {
+            candidates.append(node.endpointHost)
+        }
+        if let cidrIP = ipFromCIDR(node.addressCIDR), !candidates.contains(cidrIP) {
+            candidates.append(cidrIP)
+        }
+        if candidates.isEmpty {
+            throw NSError(domain: "ClusterRPC", code: 7, userInfo: [NSLocalizedDescriptionKey: "No valid endpoint for node \(node.name)"])
+        }
+        var lastError: Error?
+        for host in candidates {
+            do {
+                return try await sendOnce(request, host: host, port: node.endpointPort)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? NSError(domain: "ClusterRPC", code: 8, userInfo: [NSLocalizedDescriptionKey: "Failed to reach node \(node.name)"])
+    }
+
+    private func sendOnce(_ request: RPCRequest, host: String, port: Int) async throws -> RPCResponse {
         let out = try encodeRPCRequest(request)
         
         return try await withCheckedThrowingContinuation { continuation in
             let params = NWParameters.tcp
-            let port = NWEndpoint.Port(rawValue: UInt16(node.endpointPort)) ?? self.rpcPort
-            let endpoint = NWEndpoint.hostPort(host: .init(node.endpointHost), port: port)
+            let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? self.rpcPort
+            let endpoint = NWEndpoint.hostPort(host: .init(host), port: endpointPort)
             let connection = NWConnection(to: endpoint, using: params)
             var didSend = false
             
@@ -646,6 +685,11 @@ final class ClusterManager {
             }
             connection.start(queue: .global(qos: .utility))
         }
+    }
+
+    private func ipFromCIDR(_ cidr: String) -> String? {
+        let ip = cidr.split(separator: "/").first.map(String.init) ?? ""
+        return ip.isEmpty ? nil : ip
     }
 
     private func receiveAll(connection: NWConnection, maximumBytes: Int, completion: @escaping (Data?) -> Void) {
