@@ -119,27 +119,20 @@ final class WireGuardManager {
         let id = nodeID
         let name = Host.current().localizedName ?? "MLV"
 
-        // Use priority-based interface selection: Thunderbolt > Ethernet > WiFi
+        // Use deviceIPv4Address() which filters out 127.0.0.1, 192.168.64.x (NAT), etc.
+        let deviceIP = HostResources.deviceIPv4Address() ?? "127.0.0.1"
         let best = HostResources.bestAvailableInterface()
-        let epHost = best?.ipv4 ?? "127.0.0.1"
+        let epHost = deviceIP
         let epPort = rpcPort
-
-        // Use the same priority-based IP for the address
-        let deviceIP = best?.ipv4 ?? "127.0.0.1"
         let primaryType = best?.type ?? .unknown
 
-        // Get VM routes for reference
+        // VM routes
         let vmRoutes = VMManager.shared.virtualMachines
             .filter { $0.state == .running || $0.state == .starting }
             .compactMap { vm -> String? in
                 guard !vm.ipAddress.isEmpty && vm.ipAddress != "Detecting..." else { return nil }
                 return vm.ipAddress + "/32"
             }
-
-        // Also advertise all active interface IPs for fallback connectivity
-        let allActiveIPs = HostResources.activeInterfacesWithPriority()
-            .compactMap { $0.1 }
-            .filter { $0 != deviceIP }
 
         return HostInfo(
             id: id,
@@ -148,7 +141,7 @@ final class WireGuardManager {
             endpointHost: epHost,
             endpointPort: epPort,
             addressCIDR: deviceIP + "/32",
-            advertisedRoutes: Array(Set(vmRoutes + allActiveIPs.map { $0 + "/32" })).sorted(),
+            advertisedRoutes: Array(Set(vmRoutes)).sorted(),
             cpuCount: HostResources.cpuCount,
             memoryGB: HostResources.totalMemoryGB,
             freeDiskGB: HostResources.freeDiskSpaceGB,

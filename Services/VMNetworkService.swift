@@ -1,5 +1,6 @@
 import Foundation
 import Virtualization
+import Darwin
 
 @Observable
 final class VMNetworkService {
@@ -43,14 +44,9 @@ final class VMNetworkService {
         let availableBridged = VZBridgedNetworkInterface.networkInterfaces
         guard !availableBridged.isEmpty else { return nil }
 
-        let activeByBSD = Dictionary(uniqueKeysWithValues: HostResources.getNetworkInterfaces().map { ($0.bsdName, $0.isActive) })
-
         let candidates: [BridgeSelection] = availableBridged.compactMap { bridged in
-            guard let ip = HostResources.ipAddress(for: bridged.identifier),
+            guard let ip = ipv4Address(forBSDName: bridged.identifier),
                   let subnet = subnetPrefix(forIPAddress: ip) else {
-                return nil
-            }
-            if let isActive = activeByBSD[bridged.identifier], !isActive {
                 return nil
             }
             return BridgeSelection(identifier: bridged.identifier, ipv4Address: ip, subnetPrefix: subnet)
@@ -64,7 +60,7 @@ final class VMNetworkService {
             return exact
         }
 
-        if let primaryBSD = HostResources.primaryIPv4InterfaceBSDName(),
+        if let primaryBSD = HostResources.bestAvailableInterface()?.bsdName,
            let primaryCandidate = candidates.first(where: { $0.identifier == primaryBSD }) {
             return primaryCandidate
         }
@@ -112,19 +108,34 @@ final class VMNetworkService {
     }
 
     private func interfacePriority(identifier: String) -> Int {
-        if let iface = HostResources.getNetworkInterfaces().first(where: { $0.bsdName == identifier }) {
-            switch iface.type {
-            case .thunderbolt:
-                return 0
-            case .ethernet:
-                return 1
-            case .wifi:
-                return 2
-            case .unknown:
-                return 3
+        if identifier.localizedCaseInsensitiveContains("bridge") || identifier.localizedCaseInsensitiveContains("thunderbolt") {
+            return 0
+        }
+        if identifier.hasPrefix("en") {
+            return 1
+        }
+        return 3
+    }
+
+    private func ipv4Address(forBSDName bsdName: String) -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            guard let sa = ptr.pointee.ifa_addr,
+                  sa.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+            let name = String(cString: ptr.pointee.ifa_name)
+            guard name == bsdName else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(sa, socklen_t(sa.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            let ip = String(cString: hostname)
+            if !ip.isEmpty, !ip.hasPrefix("127."), !ip.hasPrefix("169.254.") {
+                return ip
             }
         }
-
-        return 3
+        return nil
     }
 }

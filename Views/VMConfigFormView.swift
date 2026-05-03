@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Virtualization
 
 struct VMConfigForm: View {
     @Environment(\.dismiss) private var dismiss
@@ -65,7 +66,7 @@ struct VMConfigForm: View {
     private let maxCores = max(1, HostResources.cpuCount - 2)
     private let maxRAM_MB = max(128, (HostResources.totalMemoryGB * 1024) - 1024)
     private let freeDisk = HostResources.freeDiskSpaceGB
-    private let interfaces = HostResources.getNetworkInterfaces()
+    private let interfaces = VZBridgedNetworkInterface.networkInterfaces
     private var isEditing: Bool { vmToEdit != nil }
     private var isContainerMode: Bool {
         AppSettingsStore.shared.workloadRuntime == .appleContainer
@@ -226,11 +227,11 @@ struct VMConfigForm: View {
                 dataDiskGB = 5
                 useDedicatedLonghornDisk = false
             }
-            if !interfaces.contains(where: { $0.bsdName == selectedBridgeName }) {
-                selectedBridgeName = interfaces.first?.bsdName ?? ""
+            if !interfaces.contains(where: { $0.identifier == selectedBridgeName }) {
+                selectedBridgeName = interfaces.first?.identifier ?? ""
             }
-            if !interfaces.contains(where: { $0.bsdName == secondaryBridgeName }) {
-                secondaryBridgeName = interfaces.first?.bsdName ?? ""
+            if !interfaces.contains(where: { $0.identifier == secondaryBridgeName }) {
+                secondaryBridgeName = interfaces.first?.identifier ?? ""
             }
             if isContainerMode {
                 Task { @MainActor in
@@ -524,8 +525,8 @@ struct VMConfigForm: View {
                                     if interfaces.isEmpty {
                                         Text("No interface available").tag("")
                                     }
-                                    ForEach(interfaces, id: \.bsdName) { iface in
-                                        Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                    ForEach(interfaces, id: \.identifier) { iface in
+                                        Text("\(iface.localizedDisplayName) [\(iface.identifier)]").tag(iface.identifier)
                                     }
                                 }
                             }
@@ -543,8 +544,8 @@ struct VMConfigForm: View {
                                         if interfaces.isEmpty {
                                             Text("No interface available").tag("")
                                         }
-                                        ForEach(interfaces, id: \.bsdName) { iface in
-                                            Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                        ForEach(interfaces, id: \.identifier) { iface in
+                                            Text("\(iface.localizedDisplayName) [\(iface.identifier)]").tag(iface.identifier)
                                         }
                                     }
                                 }

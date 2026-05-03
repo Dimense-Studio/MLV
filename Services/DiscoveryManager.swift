@@ -374,13 +374,7 @@ final class DiscoveryManager {
         // WiFi and Ethernet can be various ranges
         // This is a heuristic - proper detection would use routing tables
         if ip.hasPrefix("192.168.") || ip.hasPrefix("10.") {
-            // Could be any type - check active interfaces
-            let activeInterfaces = HostResources.activeInterfacesWithPriority()
-            for (iface, ipv4) in activeInterfaces {
-                if let ipv4, ipv4.hasPrefix(String(parts[0] + "." + parts[1] + "." + parts[2])) {
-                    return iface.type
-                }
-            }
+            return HostResources.bestAvailableInterface()?.type
         }
         return nil
     }

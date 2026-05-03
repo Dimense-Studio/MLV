@@ -1,37 +1,38 @@
 import Foundation
 import os
 
-struct VMMetadata: Codable {
-    let id: UUID
-    let name: String
-    let cpuCount: Int
-    let memorySizeMB: Int
-    let systemDiskSizeGB: Int
-    let dataDiskSizeGB: Int
-    let systemDiskProfile: String?
-    let dataDiskProfile: String?
-    let selectedDistro: String
-    let isMaster: Bool
-    let stage: String
-    let isInstalled: Bool
-    let networkMode: String?
-    let bridgeInterfaceName: String?
-    let secondaryNetworkEnabled: Bool?
-    let secondaryNetworkMode: String?
-    let secondaryBridgeInterfaceName: String?
-    let clusterRole: String?
-    let autoStartOnLaunch: Bool?
-    let terminalConsoleHostPort: Int?
-    let monitoredProcessPID: Int?
-    let monitoredProcessName: String?
-    let hostServicePID: Int?
-    let containerImageReference: String?
-    let containerMounts: [VirtualMachine.ContainerMount]?
-    let containerPorts: [VirtualMachine.ContainerPort]?
-    let isContainerWorkload: Bool?
-    let talosSetupCompleted: Bool?
-    let clusterCoreDeployed: Bool?
-    let clusterCoreDashboardPassword: String?
+    struct VMMetadata: Codable {
+        let id: UUID
+        let name: String
+        let cpuCount: Int
+        let memorySizeMB: Int
+        let systemDiskSizeGB: Int
+        let dataDiskSizeGB: Int
+        let systemDiskProfile: String?
+        let dataDiskProfile: String?
+        let selectedDistro: String
+        let isMaster: Bool
+        let stage: String
+        let isInstalled: Bool
+        let networkMode: String?
+        let bridgeInterfaceName: String?
+        let secondaryNetworkEnabled: Bool?
+        let secondaryNetworkMode: String?
+        let secondaryBridgeInterfaceName: String?
+        let clusterRole: String?
+        let autoStartOnLaunch: Bool?
+        let terminalConsoleHostPort: Int?
+        let monitoredProcessPID: Int?
+        let monitoredProcessName: String?
+        let hostServicePID: Int?
+        let containerImageReference: String?
+        let containerMounts: [VirtualMachine.ContainerMount]?
+        let containerPorts: [VirtualMachine.ContainerPort]?
+        let isContainerWorkload: Bool?
+        let talosSetupCompleted: Bool?
+        let clusterCoreDeployed: Bool?
+        let clusterCoreDashboardPassword: String?
+        let hostDeviceIP: String?
     
     enum CodingKeys: String, CodingKey {
         case id, name, cpuCount, memorySizeMB, memorySizeGB, systemDiskSizeGB, dataDiskSizeGB
@@ -40,7 +41,7 @@ struct VMMetadata: Codable {
         case secondaryBridgeInterfaceName, clusterRole
         case autoStartOnLaunch, terminalConsoleHostPort, monitoredProcessPID, monitoredProcessName, hostServicePID
         case containerImageReference, containerMounts, containerPorts, isContainerWorkload
-        case talosSetupCompleted, clusterCoreDeployed, clusterCoreDashboardPassword
+        case talosSetupCompleted, clusterCoreDeployed, clusterCoreDashboardPassword, hostDeviceIP
     }
     
     init(from decoder: Decoder) throws {
@@ -83,6 +84,7 @@ struct VMMetadata: Codable {
         talosSetupCompleted = try container.decodeIfPresent(Bool.self, forKey: .talosSetupCompleted)
         clusterCoreDeployed = try container.decodeIfPresent(Bool.self, forKey: .clusterCoreDeployed)
         clusterCoreDashboardPassword = try container.decodeIfPresent(String.self, forKey: .clusterCoreDashboardPassword)
+        hostDeviceIP = try container.decodeIfPresent(String.self, forKey: .hostDeviceIP)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -117,6 +119,7 @@ struct VMMetadata: Codable {
         try container.encodeIfPresent(talosSetupCompleted, forKey: .talosSetupCompleted)
         try container.encodeIfPresent(clusterCoreDeployed, forKey: .clusterCoreDeployed)
         try container.encodeIfPresent(clusterCoreDashboardPassword, forKey: .clusterCoreDashboardPassword)
+        try container.encodeIfPresent(hostDeviceIP, forKey: .hostDeviceIP)
     }
     
     init(
@@ -149,7 +152,8 @@ struct VMMetadata: Codable {
         isContainerWorkload: Bool?,
         talosSetupCompleted: Bool? = nil,
         clusterCoreDeployed: Bool? = nil,
-        clusterCoreDashboardPassword: String? = nil
+        clusterCoreDashboardPassword: String? = nil,
+        hostDeviceIP: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -181,6 +185,7 @@ struct VMMetadata: Codable {
         self.talosSetupCompleted = talosSetupCompleted
         self.clusterCoreDeployed = clusterCoreDeployed
         self.clusterCoreDashboardPassword = clusterCoreDashboardPassword
+        self.hostDeviceIP = hostDeviceIP
     }
 }
 
@@ -234,7 +239,8 @@ class VMStatePersistence {
                     isContainerWorkload: vm.isContainerWorkload,
                     talosSetupCompleted: vm.talosSetupCompleted,
                     clusterCoreDeployed: vm.clusterCoreDeployed,
-                    clusterCoreDashboardPassword: vm.clusterCoreDashboardPassword.isEmpty ? nil : vm.clusterCoreDashboardPassword
+                    clusterCoreDashboardPassword: vm.clusterCoreDashboardPassword.isEmpty ? nil : vm.clusterCoreDashboardPassword,
+                    hostDeviceIP: vm.hostDeviceIP.isEmpty ? nil : vm.hostDeviceIP
                 )
             }
             do {

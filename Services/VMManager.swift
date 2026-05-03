@@ -1058,11 +1058,11 @@ public final class VMManager {
             vm.gateway = "192.168.64.1"
             vm.connectionType = "NAT (Virtualization.framework)"
             // For NAT mode, also store the host device IP for display
-            vm.hostDeviceIP = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? ""
+            vm.hostDeviceIP = HostResources.deviceIPv4Address() ?? ""
         } else {
             vm.connectionType = "Bridged (\(vm.bridgeInterfaceName ?? "auto"))"
             // For bridge mode, the VM IP is on the LAN - also store host device IP
-            vm.hostDeviceIP = HostResources.preferredIPv4Address(preferredTypes: [.thunderbolt, .ethernet, .wifi]) ?? ""
+            vm.hostDeviceIP = HostResources.deviceIPv4Address() ?? ""
         }
         vm.isConnected = true
         // Trigger Talos auto-setup for Talos VMs when IP changes

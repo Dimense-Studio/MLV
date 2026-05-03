@@ -1949,7 +1949,7 @@ struct NetworkListView: View {
     }
 
     private var localLinkType: NetworkTopologyView.LinkType {
-        let preferred = HostResources.preferredActiveInterfaceType(preferredTypes: [.thunderbolt, .ethernet, .wifi])
+        let preferred = HostResources.bestAvailableInterface()?.type ?? .unknown
         switch preferred {
         case .wifi:
             return .wifi
@@ -2145,7 +2145,7 @@ struct LegacyVMConfigForm: View {
     private let maxCores = max(1, HostResources.cpuCount - 2)
     private let maxRAM = max(2, HostResources.totalMemoryGB - 2)
     private let freeDisk = HostResources.freeDiskSpaceGB
-    private let interfaces = HostResources.getNetworkInterfaces()
+    private let interfaces = VZBridgedNetworkInterface.networkInterfaces
     private var isEditing: Bool { vmToEdit != nil }
     private var primaryActionTitle: String { isEditing ? "Save" : "Deploy" }
     
@@ -2247,11 +2247,11 @@ struct LegacyVMConfigForm: View {
                 vmName = "node-\(Int.random(in: 100...999))"
                 selectedNetworkMode = .bridge
             }
-            if !interfaces.contains(where: { $0.bsdName == selectedBridgeName }) {
-                selectedBridgeName = interfaces.first?.bsdName ?? ""
+            if !interfaces.contains(where: { $0.identifier == selectedBridgeName }) {
+                selectedBridgeName = interfaces.first?.identifier ?? ""
             }
-            if !interfaces.contains(where: { $0.bsdName == secondaryBridgeName }) {
-                secondaryBridgeName = interfaces.first?.bsdName ?? ""
+            if !interfaces.contains(where: { $0.identifier == secondaryBridgeName }) {
+                secondaryBridgeName = interfaces.first?.identifier ?? ""
             }
         }
         .alert(isEditing ? "Save failed" : "Deploy failed", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
@@ -2368,8 +2368,8 @@ struct LegacyVMConfigForm: View {
                                 if interfaces.isEmpty {
                                     Text("No interface available").tag("")
                                 }
-                                ForEach(interfaces, id: \.bsdName) { iface in
-                                    Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                ForEach(interfaces, id: \.identifier) { iface in
+                                    Text("\(iface.localizedDisplayName) [\(iface.identifier)]").tag(iface.identifier)
                                 }
                             }
                         }
@@ -2387,8 +2387,8 @@ struct LegacyVMConfigForm: View {
                                     if interfaces.isEmpty {
                                         Text("No interface available").tag("")
                                     }
-                                    ForEach(interfaces, id: \.bsdName) { iface in
-                                        Text("\(iface.name) [\(iface.bsdName)]").tag(iface.bsdName)
+                                    ForEach(interfaces, id: \.identifier) { iface in
+                                        Text("\(iface.localizedDisplayName) [\(iface.identifier)]").tag(iface.identifier)
                                     }
                                 }
                             }
